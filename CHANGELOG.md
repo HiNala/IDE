@@ -8,6 +8,31 @@ reaches a tagged release.
 ## [Unreleased]
 
 ### Added
+- **M01: Repo Scaffolding, Workspace, Toolchain, CI.**
+  - Virtual cargo workspace (`Cargo.toml`) with five member crates under
+    `crates/`: `editor-core`, `editor-render`, `editor-input`, `editor-io`,
+    and the binary crate `editor-app` (produces the `ide` executable).
+  - Per-crate stubs with passing unit tests (one per library crate; 5 tests
+    total).
+  - Toolchain pinned to Rust 1.94.1 via `rust-toolchain.toml`.
+  - `rustfmt.toml` with stable-only options.
+  - Shared `[workspace.lints]` table (Rust + Clippy) with hot-path-unfriendly
+    lints (`dbg_macro`, `todo`, `unimplemented`, `print_stderr`,
+    `print_stdout`) treated as warnings.
+  - Release profile: `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`,
+    `panic = "abort"`. Bench profile inherits with debug symbols.
+  - `deny.toml` for `cargo-deny` (licenses, advisories, bans, sources).
+  - GitHub Actions CI matrix (Windows / Linux / macOS) running `cargo fmt`,
+    `cargo clippy -D warnings`, `cargo test`, and `cargo build --release`.
+  - Separate rustdoc job with intra-doc link checking.
+  - Dependabot for cargo + GitHub Actions on a weekly cadence.
+- **Corrections to `TECH_STACK.md`.** Version pins updated to reflect
+  April-2026 stable releases: `wgpu 29` (was `23`), `glyphon 0.11` (was
+  `0.6`), `winit 0.30` (clarified that `0.31` is in beta). Added an explicit
+  version policy stating that deps are only added to `Cargo.toml` when a
+  mission actually adopts them, to avoid pinning stale versions.
+
+### Added — M00 (previous)
 - **M00: Foundation Research & Documentation.** Initial commit of repository
   scaffolding, licensing (`LICENSE-APACHE`, `LICENSE-MIT`), project `README.md`,
   root-level `ARCHITECTURE.md` and `TECH_STACK.md`, and the full `docs/` reference
@@ -16,7 +41,3 @@ reaches a tagged release.
   testing, risks, glossary, external references, mission index, and status
   tracking. Git repository initialized on the `main` branch with remote
   pointing at `https://github.com/HiNala/IDE.git`.
-
-### Notes
-- This is a pre-code milestone: no Rust source is shipped in M00. Workspace
-  scaffolding is the scope of M01.

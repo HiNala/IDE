@@ -7,11 +7,19 @@ here *and* a note in the commit that adds them.
 Versions are pinned to **minor** in `Cargo.toml` (e.g. `"0.30"`, not
 `"0.30.*"` or just `"0"`), and patched as needed through `cargo update`.
 
+> **Version policy during scaffolding.** The pins listed below are the *target*
+> versions. During M01 only the dependencies actually used at scaffold time
+> (`anyhow`, `thiserror`, `tracing`, `tracing-subscriber`) appear in
+> `Cargo.toml`. Each subsequent mission adds its crate's real deps at adoption
+> time so versions always reflect the current crates.io state. If a version in
+> this table is stale when a mission adopts it, the mission updates this
+> document in the same commit.
+
 ## Core Language & Toolchain
 
 | Tool | Locked Version | Rationale |
 |---|---|---|
-| **Rust** | `1.94` (stable) | Latest stable at project start; no nightly-only features needed. |
+| **Rust** | `1.94.1` (stable) | Latest stable at M01 (April 2026); pinned via `rust-toolchain.toml`. No nightly-only features are used. |
 | **Cargo** | bundled with rustc | Workspace + build + test + bench, one tool. |
 | **rustup** | any recent | Only used to pin the toolchain via `rust-toolchain.toml`. |
 
@@ -22,7 +30,7 @@ contributor and CI job uses the same compiler.
 
 | Crate | Locked Version | Rationale |
 |---|---|---|
-| [`winit`](https://docs.rs/winit) | `0.30` | De facto cross-platform windowing for Rust; used by wgpu, bevy, Zed-style tools. ApplicationHandler API (0.30) is the intended integration pattern. |
+| [`winit`](https://docs.rs/winit) | `0.30` (stable line; latest `0.30.13`) | De facto cross-platform windowing for Rust; `0.30` is the current stable (`0.31` is in beta at the time of M01). The `ApplicationHandler` API is the intended integration pattern. |
 | [`raw-window-handle`](https://docs.rs/raw-window-handle) | `0.6` | Required to hand a window to wgpu; winit 0.30 exposes it. |
 
 We deliberately do **not** use `tao` or `iced`'s window layer; `winit` is the
@@ -32,7 +40,7 @@ narrowest sensible abstraction.
 
 | Crate | Locked Version | Rationale |
 |---|---|---|
-| [`wgpu`](https://docs.rs/wgpu) | `23` | Cross-platform GPU abstraction (Vulkan / Metal / DX12 / GL). Stable, active, used by bevy/zed/blender-embedded. |
+| [`wgpu`](https://docs.rs/wgpu) | `29` | Cross-platform GPU abstraction (Vulkan / Metal / DX12 / GL). Current stable (April 2026). Used by bevy/zed/blender-embedded. |
 | [`bytemuck`](https://docs.rs/bytemuck) | `1.16` | Required for `Pod`/`Zeroable` derive on GPU vertex/uniform structs. |
 | [`glam`](https://docs.rs/glam) | `0.29` | SIMD-friendly math; matches bevy/wgpu community choice. |
 | [`pollster`](https://docs.rs/pollster) | `0.4` | Tiny blocking executor used only at startup to `.await` `RequestAdapter`/`RequestDevice`. |
@@ -41,9 +49,9 @@ narrowest sensible abstraction.
 
 | Crate | Locked Version | Rationale |
 |---|---|---|
-| [`ropey`](https://docs.rs/ropey) | `1.6` | Mature rope implementation with excellent performance characteristics; used by Helix. Considered alternatives: `crop`, `xi-rope` — ropey wins on ergonomics and test coverage. |
-| [`cosmic-text`](https://docs.rs/cosmic-text) | `0.12` | High-quality shaping + layout with system-font discovery; drives `glyphon`. |
-| [`glyphon`](https://docs.rs/glyphon) | `0.6` | GPU glyph-atlas renderer sitting on top of `cosmic-text` and `wgpu`. Used by bevy UI and numerous wgpu apps. |
+| [`ropey`](https://docs.rs/ropey) | `1` (stable line; `2.0-beta` not yet adopted) | Mature rope implementation with excellent performance characteristics; used by Helix. Considered alternatives: `crop`, `xi-rope` — ropey wins on ergonomics and test coverage. We pin to the `1.x` stable line; `2.0` is still in beta as of M01. |
+| [`cosmic-text`](https://docs.rs/cosmic-text) | pinned at M04 adoption | High-quality shaping + layout with system-font discovery; drives `glyphon`. Version chosen to match `glyphon` at M04. |
+| [`glyphon`](https://docs.rs/glyphon) | `0.11` | GPU glyph-atlas renderer sitting on top of `cosmic-text` and `wgpu`. Current stable (April 2026). |
 | [`unicode-segmentation`](https://docs.rs/unicode-segmentation) | `1.11` | Grapheme-correct cursor movement and selection. |
 | [`unicode-width`](https://docs.rs/unicode-width) | `0.1` | Column width computation for tab stops, status bar alignment. |
 
