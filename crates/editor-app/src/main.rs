@@ -626,6 +626,7 @@ impl App {
         self.undo = UndoStack::default();
         self.dirty = false;
         self.external_modified = false;
+        self.drag_anchor = None;
         self.clamp_cursor_to_buffer();
     }
 
