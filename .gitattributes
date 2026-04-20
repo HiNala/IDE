@@ -1,0 +1,53 @@
+# Normalize all text files to LF in the repo and on checkout
+# (the editor itself preserves the original line-ending of any loaded file;
+#  this rule only affects the repository's own source).
+* text=auto eol=lf
+
+# Explicit overrides for files that MUST keep Windows line endings on checkout
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
+*.ps1         text eol=crlf
+
+# Rust / Cargo
+*.rs          text eol=lf
+*.toml        text eol=lf
+*.lock        text eol=lf
+Cargo.toml    text eol=lf
+Cargo.lock    text eol=lf
+
+# Docs
+*.md          text eol=lf
+*.txt         text eol=lf
+LICENSE*      text eol=lf
+
+# Web / shaders
+*.html        text eol=lf
+*.css         text eol=lf
+*.js          text eol=lf
+*.wgsl        text eol=lf
+*.glsl        text eol=lf
+*.vert        text eol=lf
+*.frag        text eol=lf
+
+# Binary assets — never line-ending-munge these
+*.png         binary
+*.jpg         binary
+*.jpeg        binary
+*.gif         binary
+*.ico         binary
+*.icns        binary
+*.ttf         binary
+*.otf         binary
+*.woff        binary
+*.woff2       binary
+*.exe         binary
+*.dll         binary
+*.so          binary
+*.dylib       binary
+*.pdb         binary
+*.zip         binary
+*.dmg         binary
+*.msi         binary
+*.rpm         binary
+*.deb         binary
+*.appimage    binary

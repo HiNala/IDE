@@ -1,0 +1,57 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+# Note: Cargo.lock IS committed for the binary crate (editor-app) per Rust guidelines.
+# The workspace-level lock is committed once M01 introduces binary crates.
+
+# IDE / editor temp files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Logs and diagnostics
+*.log
+/logs/
+/profiling/
+*.profraw
+*.profdata
+flamegraph.svg
+perf.data*
+
+# Criterion benchmark results (kept out of git; regenerated locally/CI)
+/target/criterion/
+/criterion/
+
+# Coverage
+/coverage/
+*.gcda
+*.gcno
+lcov.info
+
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS / shell
+/.windsurf/cache/
+
+# Scratch space for human + agent notes that should not ship
+/scratch/
+/tmp/
