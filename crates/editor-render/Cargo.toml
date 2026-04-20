@@ -20,6 +20,7 @@ workspace = true
 [dependencies]
 editor-core         = { path = "../editor-core" }
 editor-ui           = { path = "../editor-ui" }
+ropey               = { workspace = true }
 wgpu                = { workspace = true }
 winit               = { workspace = true }
 raw-window-handle   = { workspace = true }

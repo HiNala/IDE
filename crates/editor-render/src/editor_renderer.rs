@@ -11,6 +11,8 @@ use winit::window::Window;
 
 use crate::error::RenderError;
 use crate::gpu::GpuContext;
+use crate::selection_layout;
+use crate::solid_quads::SolidQuadLayer;
 use crate::text_layer::TextLayer;
 
 /// Per-frame inputs for the compositor.
@@ -34,6 +36,8 @@ pub struct FrameInput<'a> {
     pub status: Option<StatusBarInfo>,
     /// Top-right dev overlay line (e.g. frame percentiles). `None` skips overlay.
     pub dev_hud_line: Option<String>,
+    /// UTF-8 byte range `[lo, hi)` to highlight (non-empty selections). `None` skips quads.
+    pub selection_byte_range: Option<(usize, usize)>,
 }
 
 /// CPU/GPU split for one presented frame (M07).
@@ -48,6 +52,7 @@ pub struct FrameTimings {
 pub struct EditorRenderer {
     gpu: GpuContext,
     text: TextLayer,
+    solid: SolidQuadLayer,
 }
 
 impl std::fmt::Debug for EditorRenderer {
@@ -62,7 +67,8 @@ impl EditorRenderer {
         let gpu = GpuContext::new(window)?;
         let format = gpu.surface_format();
         let text = TextLayer::new(gpu.device(), gpu.queue(), format);
-        Ok(Self { gpu, text })
+        let solid = SolidQuadLayer::new(gpu.device(), format);
+        Ok(Self { gpu, text, solid })
     }
 
     /// Swapchain resize (window size / DPI).
@@ -85,11 +91,39 @@ impl EditorRenderer {
     pub fn render_frame(&mut self, input: &FrameInput<'_>) -> Result<FrameTimings, RenderError> {
         let frame_start = Instant::now();
         self.text.set_scale_factor(input.scale_factor);
-        let EditorRenderer { gpu, text } = self;
+        let EditorRenderer { gpu, text, solid } = self;
         let status_bar =
             input.status.as_ref().map(|s| StatusBarLayout::from_info(s, input.scale_factor));
         let dev_hud = input.dev_hud_line.as_deref();
+        let status_h = status_bar.as_ref().map(|s| s.height_px).unwrap_or(0.0);
+        let rope = input.buffer.rope();
+        let total_lines = rope.len_lines();
+        let (gutter_w, char_w) =
+            crate::text_layer::compute_gutter_width_px(total_lines, input.scale_factor);
+        let line_h = text.line_height_px();
+        let rects = if let Some((a, b)) = input.selection_byte_range {
+            selection_layout::selection_rects_pixels(
+                rope,
+                a,
+                b,
+                input.scroll,
+                input.physical_size,
+                status_h,
+                line_h,
+                gutter_w,
+                char_w,
+            )
+        } else {
+            Vec::new()
+        };
         let t_prep = Instant::now();
+        solid.prepare(
+            gpu.device(),
+            gpu.queue(),
+            input.physical_size.width,
+            input.physical_size.height,
+            &rects,
+        );
         text.prepare(
             gpu.device(),
             gpu.queue(),
@@ -155,6 +189,7 @@ impl EditorRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            solid.render(&mut pass);
             text.render(&mut pass)?;
         }
 

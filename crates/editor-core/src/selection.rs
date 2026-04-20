@@ -87,11 +87,7 @@ impl Selection {
         }
         let r = self.range();
         let first = buffer.byte_to_line_col(r.start).ok()?.line;
-        let last_byte = if r.end.0 > r.start.0 {
-            BytePos(r.end.0 - 1)
-        } else {
-            r.start
-        };
+        let last_byte = if r.end.0 > r.start.0 { BytePos(r.end.0 - 1) } else { r.start };
         let last = buffer.byte_to_line_col(last_byte).ok()?.line;
         Some((first.min(last), first.max(last)))
     }
@@ -120,10 +116,7 @@ mod tests {
     #[test]
     fn line_range_inclusive_multi_line() {
         let buf = TextBuffer::from_str("a\nb\nc\n");
-        let s = Selection {
-            anchor: BytePos(0),
-            head: BytePos(4),
-        };
+        let s = Selection { anchor: BytePos(0), head: BytePos(4) };
         assert_eq!(s.line_range_inclusive(&buf), Some((0, 1)));
     }
 }

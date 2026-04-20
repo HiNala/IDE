@@ -9,11 +9,14 @@
 mod editor_renderer;
 mod error;
 mod gpu;
+mod selection_layout;
+mod solid_quads;
 mod text_layer;
 
 pub use editor_renderer::{EditorRenderer, FrameInput, FrameTimings};
 pub use error::RenderError;
 pub use gpu::{dry_run_headless, GpuContext};
+pub use text_layer::compute_gutter_width_px;
 pub use text_layer::TextLayer;
 
 /// Crate version string, sourced from `Cargo.toml` at compile time.

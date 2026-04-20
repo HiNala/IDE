@@ -3,7 +3,7 @@
 use editor_core::CursorMotion;
 
 /// User-visible or internal editor actions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EditorCommand {
     /// Insert UTF-8 text at the caret (typing, paste, IME commit).
     InsertText(String),
@@ -46,4 +46,17 @@ pub enum EditorCommand {
     /// Scroll by one viewport page (PageUp / PageDown).
     PageUp,
     PageDown,
+    /// Left mouse down over the window (physical pixels, top-left origin).
+    ///
+    /// `click_count` is 1–3 for single/double/triple within platform timing and distance.
+    MouseClick {
+        x_px: i32,
+        y_px: i32,
+        click_count: u8,
+        shift: bool,
+    },
+    /// Left button held and pointer moved (physical pixels).
+    MouseDrag { x_px: i32, y_px: i32 },
+    /// Vertical scroll (positive content delta: move document up, decrease `ScrollOffset.y_px`).
+    ScrollContent { delta_y_px: f32 },
 }

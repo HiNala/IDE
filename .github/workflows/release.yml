@@ -1,0 +1,95 @@
+# M11 — Unsigned release artifacts on git tags (MSI/dmg/deb/AppImage are follow-ups).
+# Pushes matching `v*` build `editor-app` on Windows, Linux, macOS and attach to GitHub Releases.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev \
+            libvulkan-dev mesa-vulkan-drivers \
+            libasound2-dev pkg-config
+
+      - name: MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build release binary
+        run: cargo build --release -p editor-app --locked
+
+      - name: Stage artifact
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/editor-app.exe "dist/ide-${VERSION}-windows-x86_64.exe"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/release/editor-app "dist/ide-${VERSION}-macos-x86_64"
+            chmod +x "dist/ide-${VERSION}-macos-x86_64"
+          else
+            cp target/release/editor-app "dist/ide-${VERSION}-linux-x86_64"
+            chmod +x "dist/ide-${VERSION}-linux-x86_64"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ide-${{ matrix.os }}
+          path: dist/*
+
+  publish:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: ide-*
+          merge-multiple: true
+
+      - name: SHA256 checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

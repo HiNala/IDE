@@ -29,30 +29,56 @@ fn rasterize_cursor(req: RasterizeCustomGlyphRequest) -> Option<RasterizedCustom
     Some(RasterizedCustomGlyph { data: vec![255u8; n], content_type: ContentType::Mask })
 }
 
-fn build_text_areas<'a>(
+/// Line number column width + monospace cell width (matches cursor column spacing).
+#[must_use]
+pub fn compute_gutter_width_px(total_lines: usize, scale_factor: f32) -> (f32, f32) {
+    let metrics = Metrics::new(14.0 * scale_factor, 20.0 * scale_factor);
+    let char_w = metrics.font_size * 0.6;
+    let digits = total_lines.max(1).to_string().len();
+    let gutter_inner = digits as f32 * char_w;
+    let gutter_w = gutter_inner + 10.0;
+    (gutter_w, char_w)
+}
+
+#[allow(clippy::too_many_arguments)] // One row gutter + body pair per visible line.
+fn build_layer_text_areas<'a>(
+    gutter_buffers: &'a [Buffer],
     line_buffers: &'a [Buffer],
     custom_glyphs_per_line: &'a [Vec<CustomGlyph>],
     first: usize,
+    gutter_w: f32,
     physical_size: PhysicalSize<u32>,
     scroll: ScrollOffset,
     line_h: f32,
     clip_bottom: i32,
 ) -> Vec<TextArea<'a>> {
     let w = physical_size.width as i32;
-    (0..line_buffers.len())
-        .map(|i| {
-            let line_idx = first + i;
-            TextArea {
-                buffer: &line_buffers[i],
-                left: 8.0,
-                top: (line_idx as f32) * line_h - scroll.y_px + 4.0,
-                scale: 1.0,
-                bounds: TextBounds { left: 0, top: 0, right: w, bottom: clip_bottom },
-                default_color: Color::rgb(0xE0, 0xE0, 0xE0),
-                custom_glyphs: &custom_glyphs_per_line[i],
-            }
-        })
-        .collect()
+    let gutter_right = (8.0 + gutter_w).round() as i32;
+    let body_left = 8.0 + gutter_w;
+    let mut areas = Vec::with_capacity(line_buffers.len() * 2);
+    for i in 0..line_buffers.len() {
+        let line_idx = first + i;
+        let top = (line_idx as f32) * line_h - scroll.y_px + 4.0;
+        areas.push(TextArea {
+            buffer: &gutter_buffers[i],
+            left: 8.0,
+            top,
+            scale: 1.0,
+            bounds: TextBounds { left: 0, top: 0, right: gutter_right, bottom: clip_bottom },
+            default_color: Color::rgb(0x78, 0x78, 0x78),
+            custom_glyphs: &[],
+        });
+        areas.push(TextArea {
+            buffer: &line_buffers[i],
+            left: body_left,
+            top,
+            scale: 1.0,
+            bounds: TextBounds { left: 0, top: 0, right: w, bottom: clip_bottom },
+            default_color: Color::rgb(0xE0, 0xE0, 0xE0),
+            custom_glyphs: &custom_glyphs_per_line[i],
+        });
+    }
+    areas
 }
 
 fn push_dev_hud_text_area<'a>(
@@ -92,6 +118,8 @@ pub struct TextLayer {
     status_line_buffer: Option<Buffer>,
     /// Top-right dev HUD (F11 metrics overlay).
     dev_hud_buffer: Option<Buffer>,
+    /// Left gutter line-number strings (one buffer per visible row).
+    gutter_line_buffers: Vec<Buffer>,
     scale_factor: f32,
 }
 
@@ -127,6 +155,7 @@ impl TextLayer {
             custom_glyphs_per_line: Vec::new(),
             status_line_buffer: None,
             dev_hud_buffer: None,
+            gutter_line_buffers: Vec::new(),
             scale_factor: 1.0,
         }
     }
@@ -135,9 +164,10 @@ impl TextLayer {
         self.scale_factor = scale;
     }
 
+    /// Matches [`Self::prepare`] line metrics (keep selection quads aligned with glyphs).
     #[must_use]
     pub fn line_height_px(&self) -> f32 {
-        20.0 * self.scale_factor
+        Metrics::new(14.0 * self.scale_factor, 20.0 * self.scale_factor).line_height
     }
 
     pub fn after_frame(&mut self) {
@@ -187,6 +217,27 @@ impl TextLayer {
             }
             self.line_buffers.push(buf);
             self.custom_glyphs_per_line.push(customs);
+        }
+    }
+
+    fn fill_gutter_buffers(
+        &mut self,
+        first: usize,
+        last: usize,
+        total_lines: usize,
+        gutter_w: f32,
+        metrics: Metrics,
+    ) {
+        self.gutter_line_buffers.clear();
+        let digits = total_lines.max(1).to_string().len().max(1);
+        let attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY));
+        for line_idx in first..last {
+            let label = format!("{:>width$}", line_idx + 1, width = digits);
+            let mut gbuf = Buffer::new(&mut self.font_system, metrics);
+            gbuf.set_size(&mut self.font_system, Some(gutter_w), None);
+            gbuf.set_text(&mut self.font_system, &label, &attrs, Shaping::Advanced, None);
+            gbuf.shape_until_scroll(&mut self.font_system, false);
+            self.gutter_line_buffers.push(gbuf);
         }
     }
 
@@ -252,6 +303,9 @@ impl TextLayer {
             cursor_col,
         );
 
+        let (gutter_w, _) = compute_gutter_width_px(total_lines, self.scale_factor);
+        self.fill_gutter_buffers(first, last, total_lines, gutter_w, metrics);
+
         self.status_line_buffer = None;
         let attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY));
         if let Some(sb) = status_bar {
@@ -264,10 +318,12 @@ impl TextLayer {
 
         self.set_dev_hud_buffer(dev_hud_line);
 
-        let mut areas = build_text_areas(
+        let mut areas = build_layer_text_areas(
+            &self.gutter_line_buffers,
             &self.line_buffers,
             &self.custom_glyphs_per_line,
             first,
+            gutter_w,
             physical_size,
             scroll,
             line_h,
@@ -333,10 +389,13 @@ impl TextLayer {
                     self.status_line_buffer = Some(sbuf);
                 }
                 self.set_dev_hud_buffer(dev_hud_line);
-                let mut areas2 = build_text_areas(
+                self.fill_gutter_buffers(first, last, total_lines, gutter_w, metrics);
+                let mut areas2 = build_layer_text_areas(
+                    &self.gutter_line_buffers,
                     &self.line_buffers,
                     &self.custom_glyphs_per_line,
                     first,
+                    gutter_w,
                     physical_size,
                     scroll,
                     line_h,

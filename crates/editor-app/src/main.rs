@@ -20,11 +20,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::Receiver;
 use editor_core::{
-    BytePos, Cursor, CursorMotion, EditKind, ScrollOffset, TextBuffer, UndoStack, WorkerPool,
+    BytePos, Cursor, CursorMotion, EditKind, ScrollOffset, Selection, TextBuffer, UndoStack,
+    WorkerPool,
 };
 use editor_input::{map_key_event, EditorCommand};
 use editor_io::{load_file_sync, save_file_sync, Encoding, LoadError, LoadedFile, SaveError};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -117,7 +118,8 @@ fn restore_cursor_byte(
 }
 
 fn main() -> ExitCode {
-    init_tracing();
+    let log_json = std::env::args().skip(1).any(|a| a == "--log-json");
+    init_tracing(log_json);
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => code,
@@ -132,7 +134,7 @@ fn run() -> Result<(), ExitCode> {
             print_help();
             return Ok(());
         }
-        if a.starts_with("--") && a != "--dry-run" {
+        if a.starts_with("--") && !matches!(a.as_str(), "--dry-run" | "--log-json") {
             eprintln!("editor-app: unknown option: {a}");
             return Err(ExitCode::from(64));
         }
@@ -169,6 +171,7 @@ Arguments:
 
 Options:
   --dry-run   Headless GPU adapter/device init (no window).
+  --log-json  Emit tracing logs as JSON lines (for tooling); still obeys RUST_LOG.
   -h, --help  Show this help.
 "
     );
@@ -250,6 +253,7 @@ fn run_windowed(plan: InitialLoadPlan, persisted: config::PersistedState) -> any
         metrics: metrics::MetricsCollector::new(),
         last_metrics_debug: Instant::now() - Duration::from_secs(2),
         ime_suppress_next_keytext: false,
+        selection: Selection::empty(BytePos(cursor_byte0)),
     };
     app.clamp_cursor_to_buffer();
     event_loop.run_app(&mut app)?;
@@ -284,6 +288,8 @@ struct App {
     last_metrics_debug: Instant,
     /// After [`Ime::Commit`], drop one duplicate [`EditorCommand::InsertText`] from the next key event.
     ime_suppress_next_keytext: bool,
+    /// Single anchor/head region; collapsed when anchor == head (caret only).
+    selection: Selection,
 }
 
 impl App {
@@ -368,6 +374,96 @@ impl App {
             p -= 1;
         }
         self.cursor = Cursor::new(BytePos(p));
+        self.selection = Selection::empty(self.cursor.pos());
+    }
+
+    fn collapse_selection_to_cursor(&mut self) {
+        self.selection = Selection::empty(self.cursor.pos());
+    }
+
+    /// Deletes the selected range in one undo step; caret moves to range start.
+    fn delete_selection_if_nonempty(&mut self) -> bool {
+        if self.selection.is_empty() {
+            return false;
+        }
+        let r = self.selection.range();
+        let Ok(deleted) = self.buffer.slice_to_string(r.start..r.end) else {
+            return false;
+        };
+        let Ok(edit) = self
+            .buffer
+            .apply_edit(EditKind::Delete { range: r.start..r.end, deleted_text: deleted })
+        else {
+            return false;
+        };
+        self.undo.push(edit);
+        self.cursor = Cursor::new(r.start);
+        self.selection = Selection::empty(r.start);
+        self.dirty = true;
+        true
+    }
+
+    fn insert_string(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.delete_selection_if_nonempty();
+        let pos = self.cursor.pos().0;
+        if let Ok(edit) =
+            self.buffer.apply_edit(EditKind::Insert { pos: BytePos(pos), text: text.to_string() })
+        {
+            self.undo.push(edit);
+            self.cursor = Cursor::new(BytePos(pos + text.len()));
+            self.selection = Selection::empty(self.cursor.pos());
+            self.dirty = true;
+            self.scroll_cursor_into_view();
+        }
+    }
+
+    fn clipboard_copy_selection(&self) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let Ok(t) = self.buffer.slice_to_string(self.selection.range()) else {
+            return;
+        };
+        match arboard::Clipboard::new() {
+            Ok(mut c) => {
+                if let Err(e) = c.set_text(t) {
+                    warn!(error = %e, "clipboard set");
+                }
+            }
+            Err(e) => warn!(error = %e, "clipboard unavailable"),
+        }
+    }
+
+    fn clipboard_cut(&mut self) {
+        self.clipboard_copy_selection();
+        let _ = self.delete_selection_if_nonempty();
+    }
+
+    fn clipboard_paste(&mut self) {
+        let text = match arboard::Clipboard::new() {
+            Ok(mut c) => match c.get_text() {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(error = %e, "clipboard read");
+                    return;
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "clipboard unavailable");
+                return;
+            }
+        };
+        self.insert_string(&text);
+    }
+
+    fn select_all(&mut self) {
+        let len = self.buffer.len_bytes();
+        self.selection = Selection { anchor: BytePos(0), head: BytePos(len) };
+        self.cursor = Cursor::new(BytePos(len));
+        self.scroll_cursor_into_view();
     }
 
     fn poll_io(&mut self) {
@@ -508,6 +604,12 @@ impl App {
         if let (Some(renderer), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) {
             let snap = self.buffer.snapshot();
             let physical = w.inner_size();
+            let selection_byte_range = if self.selection.is_empty() {
+                None
+            } else {
+                let r = self.selection.range();
+                Some((r.start.0, r.end.0))
+            };
             let input = editor_render::FrameInput {
                 buffer: &snap,
                 scroll: self.scroll,
@@ -518,6 +620,7 @@ impl App {
                 scale_factor: self.scale_factor,
                 status: Some(status),
                 dev_hud_line,
+                selection_byte_range,
             };
             match renderer.render_frame(&input) {
                 Ok(timings) => {
@@ -582,22 +685,33 @@ impl App {
                 self.open_via_dialog();
                 false
             }
-            EditorCommand::InsertText(text) => {
-                if !text.is_empty() {
-                    let pos = self.cursor.pos().0;
-                    if let Ok(edit) = self
-                        .buffer
-                        .apply_edit(EditKind::Insert { pos: BytePos(pos), text: text.clone() })
-                    {
-                        self.undo.push(edit);
-                        self.cursor = Cursor::new(BytePos(pos + text.len()));
-                        self.dirty = true;
-                        self.scroll_cursor_into_view();
-                    }
+            EditorCommand::Copy => {
+                self.clipboard_copy_selection();
+                false
+            }
+            EditorCommand::Cut => {
+                if !self.document_loading {
+                    self.clipboard_cut();
+                    self.scroll_cursor_into_view();
                 }
                 false
             }
+            EditorCommand::Paste => {
+                if !self.document_loading {
+                    self.clipboard_paste();
+                }
+                false
+            }
+            EditorCommand::SelectAll => {
+                self.select_all();
+                false
+            }
+            EditorCommand::InsertText(text) => {
+                self.insert_string(&text);
+                false
+            }
             EditorCommand::InsertNewline => {
+                self.delete_selection_if_nonempty();
                 let pos = self.cursor.pos().0;
                 if let Ok(edit) = self
                     .buffer
@@ -605,12 +719,17 @@ impl App {
                 {
                     self.undo.push(edit);
                     self.cursor = Cursor::new(BytePos(pos + 1));
+                    self.selection = Selection::empty(self.cursor.pos());
                     self.dirty = true;
                     self.scroll_cursor_into_view();
                 }
                 false
             }
             EditorCommand::DeleteBackward => {
+                if self.delete_selection_if_nonempty() {
+                    self.scroll_cursor_into_view();
+                    return false;
+                }
                 let end = self.cursor.pos().0;
                 if end > 0 {
                     let mut c = self.cursor;
@@ -625,6 +744,7 @@ impl App {
                             }) {
                                 self.undo.push(edit);
                                 self.cursor = c;
+                                self.collapse_selection_to_cursor();
                                 self.dirty = true;
                                 self.scroll_cursor_into_view();
                             }
@@ -634,6 +754,10 @@ impl App {
                 false
             }
             EditorCommand::DeleteForward => {
+                if self.delete_selection_if_nonempty() {
+                    self.scroll_cursor_into_view();
+                    return false;
+                }
                 let start = self.cursor.pos().0;
                 if start < self.buffer.len_bytes() {
                     let mut c = self.cursor;
@@ -647,6 +771,7 @@ impl App {
                                 deleted_text: deleted,
                             }) {
                                 self.undo.push(edit);
+                                self.collapse_selection_to_cursor();
                                 self.dirty = true;
                                 self.scroll_cursor_into_view();
                             }
@@ -658,6 +783,7 @@ impl App {
             EditorCommand::Undo => {
                 if let Ok(Some(_)) = self.undo.undo(&mut self.buffer) {
                     self.clamp_cursor_to_buffer();
+                    self.collapse_selection_to_cursor();
                     self.dirty = true;
                     self.scroll_cursor_into_view();
                 }
@@ -666,6 +792,7 @@ impl App {
             EditorCommand::Redo => {
                 if let Ok(Some(_)) = self.undo.redo(&mut self.buffer) {
                     self.clamp_cursor_to_buffer();
+                    self.collapse_selection_to_cursor();
                     self.dirty = true;
                     self.scroll_cursor_into_view();
                 }
@@ -688,13 +815,28 @@ impl App {
                 info!(dev_hud = self.dev_hud, "dev HUD (title bar) toggled");
                 false
             }
-            EditorCommand::ApplyCursorMotion { motion, extend_selection: _ } => {
-                if self.cursor.apply(motion, &self.buffer).is_ok() {
-                    self.scroll_cursor_into_view();
+            EditorCommand::ApplyCursorMotion { motion, extend_selection } => {
+                if !extend_selection {
+                    if self.cursor.apply(motion, &self.buffer).is_ok() {
+                        self.collapse_selection_to_cursor();
+                        self.scroll_cursor_into_view();
+                    }
+                } else {
+                    if self.selection.is_empty() {
+                        self.selection.anchor = self.cursor.pos();
+                    }
+                    if self.cursor.apply(motion, &self.buffer).is_ok() {
+                        self.selection.head = self.cursor.pos();
+                        self.scroll_cursor_into_view();
+                    }
                 }
                 false
             }
             EditorCommand::DeleteWordBackward => {
+                if self.delete_selection_if_nonempty() {
+                    self.scroll_cursor_into_view();
+                    return false;
+                }
                 let s = self.buffer.to_text();
                 let pos = self.cursor.pos().0;
                 if let Some(r) = editor_core::delete_word_backward_range(&s, pos) {
@@ -705,6 +847,7 @@ impl App {
                     }) {
                         self.undo.push(edit);
                         self.cursor = Cursor::new(BytePos(r.start));
+                        self.collapse_selection_to_cursor();
                         self.dirty = true;
                         self.scroll_cursor_into_view();
                     }
@@ -712,6 +855,10 @@ impl App {
                 false
             }
             EditorCommand::DeleteWordForward => {
+                if self.delete_selection_if_nonempty() {
+                    self.scroll_cursor_into_view();
+                    return false;
+                }
                 let s = self.buffer.to_text();
                 let pos = self.cursor.pos().0;
                 if let Some(r) = editor_core::delete_word_forward_range(&s, pos) {
@@ -722,6 +869,7 @@ impl App {
                     }) {
                         self.undo.push(edit);
                         self.cursor = Cursor::new(BytePos(r.start));
+                        self.collapse_selection_to_cursor();
                         self.dirty = true;
                         self.scroll_cursor_into_view();
                     }
@@ -859,22 +1007,39 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,editor_app=info,editor_render=info,wgpu=warn"));
+fn init_tracing(json_logs: bool) {
+    let default_filter = if cfg!(debug_assertions) {
+        "info,editor_app=info,editor_render=info,wgpu=warn"
+    } else {
+        "warn,editor_app=info,wgpu=warn"
+    };
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     #[cfg(feature = "tracy")]
     {
-        if cfg!(debug_assertions) {
+        let tracy = tracing_tracy::TracyLayer::default();
+        if json_logs {
             tracing_subscriber::registry()
                 .with(filter)
-                .with(tracing_tracy::TracyLayer::default())
+                .with(tracy)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .json()
+                        .with_target(true)
+                        .with_current_span(false),
+                )
+                .init();
+        } else if cfg!(debug_assertions) {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracy)
                 .with(tracing_subscriber::fmt::layer().with_target(true).with_level(true).pretty())
                 .init();
         } else {
             tracing_subscriber::registry()
                 .with(filter)
-                .with(tracing_tracy::TracyLayer::default())
+                .with(tracy)
                 .with(tracing_subscriber::fmt::layer().with_target(true).with_level(true).compact())
                 .init();
         }
@@ -882,7 +1047,17 @@ fn init_tracing() {
 
     #[cfg(not(feature = "tracy"))]
     {
-        if cfg!(debug_assertions) {
+        if json_logs {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .json()
+                        .with_target(true)
+                        .with_current_span(false),
+                )
+                .init();
+        } else if cfg!(debug_assertions) {
             tracing_subscriber::registry()
                 .with(filter)
                 .with(tracing_subscriber::fmt::layer().with_target(true).with_level(true).pretty())

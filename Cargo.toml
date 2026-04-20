@@ -80,8 +80,15 @@ codegen-units = 1
 strip         = "symbols"
 panic         = "abort"
 debug         = false
+incremental   = false
 
 [profile.release-dev]
+inherits = "release"
+debug    = true
+strip    = "none"
+
+# Alias for M11 / Tracy profiling sessions (same intent as `release-dev`).
+[profile.release-with-debug]
 inherits = "release"
 debug    = true
 strip    = "none"

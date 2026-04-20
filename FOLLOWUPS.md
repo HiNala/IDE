@@ -2,32 +2,27 @@
 
 Items that need a **dedicated mission** or **product decision** rather than a drive-by fix.
 
-## Next engineering sequence (highest leverage)
+## Current focus (by mission pack)
 
-1. **M04 — Text rendering (glyphon + wgpu)**  
-   Render `TextBuffer` content in `editor-render`; `editor-ui` layout for gutter placeholder.
+The codebase implements **M00–M10** in tree (see [`docs/MISSION_IMPLEMENTATION_STATUS.md`](docs/MISSION_IMPLEMENTATION_STATUS.md)). Outstanding high-level work:
 
-2. **M05 — Frame loop + input wiring**  
-   Connect `editor-input::map_key_event` to an `EditorState` in `editor-app` (buffer + cursor + selection); hit input-to-pixel budgets.
+1. **M07–M08 — Observability & MVP acceptance**  
+   Fill `docs/MVP_ACCEPTANCE.md` with measured p50/p95/p99, stress runs, and release decision.
 
-3. **M06 — File I/O**  
-   Async load/save, atomic writes, encoding detection in `editor-io`.
+2. **M11 — Release engineering**  
+   **Done (partial):** [`release.yml`](.github/workflows/release.yml) publishes unsigned binaries on `v*` tags. **Still TODO:** MSI/dmg/deb/AppImage, optional signing, binary size budget — see [`docs/missions/M11_RELEASE_ENGINEERING_PACKAGING.md`](docs/missions/M11_RELEASE_ENGINEERING_PACKAGING.md) and [`docs/RELEASING.md`](docs/RELEASING.md).
 
-4. **M07–M08 — Observability + MVP acceptance**  
-   Dev overlay, Criterion baselines, stress tests, `docs/MVP_ACCEPTANCE.md` rows.
+3. **M12 — Resize / DPI polish**  
+   Complete checklist in [`docs/missions/M12_WINDOW_RESIZE_DPI_POLISH.md`](docs/missions/M12_WINDOW_RESIZE_DPI_POLISH.md).
 
-5. **M09–M10 — V2**  
-   Line numbers, selection, clipboard, undo UI, status bar, `state.json` persistence.
-
-6. **M11+**  
-   Packaging (M11), then V3 missions M12–M24 per [`docs/missions/00_V3_VISION.md`](docs/missions/00_V3_VISION.md).
+4. **M13+ — V3**  
+   New crates (`editor-workspace`, AI layers, etc.) per [`docs/missions/00_V3_VISION.md`](docs/missions/00_V3_VISION.md). Do not start M14 until M13’s data model exists.
 
 ## Documentation
 
-- Flesh out `docs/ARCHITECTURE.md` (crate graph, threads, frame phases) as M04+ land.
-- Keep `docs/STATUS.md` in sync with the checklist above after each mission closes.
+- Keep [`docs/STATUS.md`](docs/STATUS.md) and [`docs/MISSION_IMPLEMENTATION_STATUS.md`](docs/MISSION_IMPLEMENTATION_STATUS.md) updated when a mission phase closes.
+- Historical references to `/00_MISSION_INDEX.md` at repo root point to [`docs/missions/00_MISSION_INDEX.md`](docs/missions/00_MISSION_INDEX.md).
 
 ## Process
 
 - Canonical mission list: [`docs/missions/00_MISSION_INDEX.md`](docs/missions/00_MISSION_INDEX.md).
-- Historical references to `/00_MISSION_INDEX.md` at repo root mean the same content now under `docs/missions/`.
