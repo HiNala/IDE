@@ -28,15 +28,24 @@ editor-input   = { path = "../editor-input" }
 editor-io      = { path = "../editor-io" }
 editor-ui      = { path = "../editor-ui" }
 
+directories        = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
 anyhow             = { workspace = true }
+crossbeam-channel  = { workspace = true }
+rfd                = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
+memory-stats       = { workspace = true }
 winit              = { workspace = true }
 wgpu               = { workspace = true }
 tracing-tracy      = { version = "0.11", optional = true }
 
 [build-dependencies]
 winres = "0.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 default = []

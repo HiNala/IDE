@@ -87,13 +87,22 @@ fn request_adapter_for_surface(
 }
 
 /// Owns `wgpu` instance, surface, device, queue, and swapchain configuration.
-#[derive(Debug)]
 pub struct GpuContext {
     pub(crate) surface: wgpu::Surface<'static>,
+    adapter: wgpu::Adapter,
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     pub(crate) config: wgpu::SurfaceConfiguration,
     format: wgpu::TextureFormat,
+}
+
+impl std::fmt::Debug for GpuContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuContext")
+            .field("config", &self.config)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
 }
 
 impl GpuContext {
@@ -128,9 +137,7 @@ impl GpuContext {
         if let Some(srgb) = caps.formats.iter().copied().find(|f| f.is_srgb()) {
             config.format = srgb;
         }
-        let refresh = window
-            .current_monitor()
-            .and_then(|m| m.refresh_rate_millihertz());
+        let refresh = window.current_monitor().and_then(|m| m.refresh_rate_millihertz());
         config.present_mode = choose_present_mode(&caps.present_modes, refresh);
         if let Some(hz) = refresh {
             info!(
@@ -161,11 +168,7 @@ impl GpuContext {
         let caps = self.surface.get_capabilities(&self.adapter);
         let mode = choose_present_mode(&caps.present_modes, refresh);
         if mode != self.config.present_mode {
-            info!(
-                ?mode,
-                ?refresh,
-                "wgpu: present mode updated for current display"
-            );
+            info!(?mode, ?refresh, "wgpu: present mode updated for current display");
             self.config.present_mode = mode;
             self.surface.configure(&self.device, &self.config);
         }

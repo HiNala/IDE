@@ -33,6 +33,7 @@ pub mod scroll;
 pub mod selection;
 pub mod undo;
 pub mod word_nav;
+pub mod worker;
 
 pub use buffer::line_ending::LineEnding;
 pub use buffer::{Edit, EditKind, TextBuffer, TextBufferSnapshot};
@@ -43,6 +44,7 @@ pub use scroll::ScrollOffset;
 pub use selection::Selection;
 pub use undo::UndoStack;
 pub use word_nav::{delete_word_backward_range, delete_word_forward_range, word_left, word_right};
+pub use worker::{JobToken, WorkerPool};
 
 /// Crate version string, sourced from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

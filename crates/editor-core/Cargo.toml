@@ -18,6 +18,8 @@ publish       = false
 workspace = true
 
 [dependencies]
+crossbeam-channel    = { workspace = true }
+num_cpus             = { workspace = true }
 ropey                = { workspace = true }
 thiserror            = { workspace = true }
 tracing              = { workspace = true }

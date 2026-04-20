@@ -11,7 +11,7 @@ mod error;
 mod gpu;
 mod text_layer;
 
-pub use editor_renderer::{EditorRenderer, FrameInput};
+pub use editor_renderer::{EditorRenderer, FrameInput, FrameTimings};
 pub use error::RenderError;
 pub use gpu::{dry_run_headless, GpuContext};
 pub use text_layer::TextLayer;

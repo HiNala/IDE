@@ -1,8 +1,10 @@
 //! Composes [`GpuContext`](crate::gpu::GpuContext) + [`TextLayer`](crate::text_layer::TextLayer) for the editor window.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use editor_core::{ScrollOffset, TextBufferSnapshot};
+use editor_ui::{StatusBarInfo, StatusBarLayout};
 use wgpu::Color;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
@@ -28,6 +30,18 @@ pub struct FrameInput<'a> {
     pub physical_size: PhysicalSize<u32>,
     /// Window content scale factor (DPI).
     pub scale_factor: f32,
+    /// Bottom status bar (file path, Ln/Col, encoding, line ending). `None` hides it.
+    pub status: Option<StatusBarInfo>,
+    /// Top-right dev overlay line (e.g. frame percentiles). `None` skips overlay.
+    pub dev_hud_line: Option<String>,
+}
+
+/// CPU/GPU split for one presented frame (M07).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FrameTimings {
+    pub prepare: Duration,
+    pub gpu: Duration,
+    pub total: Duration,
 }
 
 /// Window GPU context plus glyphon text pipeline.
@@ -66,10 +80,16 @@ impl EditorRenderer {
         self.text.set_scale_factor(scale);
     }
 
-    /// Clear, shape text, draw, present.
-    pub fn render_frame(&mut self, input: &FrameInput<'_>) -> Result<(), RenderError> {
+    /// Clear, shape text, draw, present. Returns per-phase timings when work was submitted.
+    #[tracing::instrument(skip(self, input), level = "debug")]
+    pub fn render_frame(&mut self, input: &FrameInput<'_>) -> Result<FrameTimings, RenderError> {
+        let frame_start = Instant::now();
         self.text.set_scale_factor(input.scale_factor);
         let EditorRenderer { gpu, text } = self;
+        let status_bar =
+            input.status.as_ref().map(|s| StatusBarLayout::from_info(s, input.scale_factor));
+        let dev_hud = input.dev_hud_line.as_deref();
+        let t_prep = Instant::now();
         text.prepare(
             gpu.device(),
             gpu.queue(),
@@ -78,17 +98,31 @@ impl EditorRenderer {
             input.cursor_byte,
             input.physical_size,
             input.cursor_blink_on,
+            status_bar.as_ref(),
+            dev_hud,
         )?;
+        let prepare = t_prep.elapsed();
 
+        let t_gpu = Instant::now();
         let surface_texture = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(());
+                text.after_frame();
+                return Ok(FrameTimings {
+                    prepare,
+                    gpu: Duration::ZERO,
+                    total: frame_start.elapsed(),
+                });
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 gpu.surface.configure(gpu.device(), &gpu.config);
-                return Ok(());
+                text.after_frame();
+                return Ok(FrameTimings {
+                    prepare,
+                    gpu: Duration::ZERO,
+                    total: frame_start.elapsed(),
+                });
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 return Err(RenderError::SurfaceTexture("surface lost"));
@@ -126,8 +160,9 @@ impl EditorRenderer {
 
         gpu.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
+        let gpu_elapsed = t_gpu.elapsed();
         text.after_frame();
-        Ok(())
+        Ok(FrameTimings { prepare, gpu: gpu_elapsed, total: frame_start.elapsed() })
     }
 
     /// Default line height in physical pixels (matches bundled metrics × scale).

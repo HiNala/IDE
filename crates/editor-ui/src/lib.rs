@@ -6,6 +6,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod status_bar;
+
+pub use status_bar::{SourceEncoding, StatusBarInfo, StatusBarLayout};
+
 /// Crate version string, sourced from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
