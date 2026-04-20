@@ -39,6 +39,9 @@ ignore = []
 ###############################################################################
 [licenses]
 version = 2
+# Don't warn when a license in `allow` isn't used by any current crate; the
+# list intentionally covers licenses we *will* accept as the dep graph grows.
+unused-allowed-license = "allow"
 # SPDX expressions of licenses we accept across the dependency graph.
 allow = [
     "Apache-2.0",
@@ -65,6 +68,9 @@ exceptions = []
 [bans]
 multiple-versions       = "warn"
 wildcards               = "deny"
+# Internal workspace members are referenced by `{ path = "..." }` and have no
+# published version; cargo-deny otherwise flags them as wildcard deps.
+allow-wildcard-paths    = true
 highlight               = "all"
 workspace-default-features = "allow"
 external-default-features  = "allow"

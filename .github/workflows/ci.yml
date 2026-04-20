@@ -114,13 +114,11 @@ jobs:
         run: cargo doc --all --no-deps --all-features --locked
 
   # --------------------------------------------------------------------------
-  # Supply-chain audit (advisory, non-blocking for now).
-  # Enforced gating is planned for a later mission.
+  # Supply-chain audit. Blocking: licenses/advisories/bans must stay clean.
   # --------------------------------------------------------------------------
   deny:
-    name: cargo-deny (advisory)
+    name: cargo-deny
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
