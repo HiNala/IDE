@@ -1,34 +1,33 @@
-# Follow-Ups
+# Follow-ups
 
-Deferred work items discovered during missions. One bullet per item.
-Every new mission starts by reviewing this file and pulling in anything
-that belongs in scope.
+Items that need a **dedicated mission** or **product decision** rather than a drive-by fix.
 
-Format per entry:
+## Next engineering sequence (highest leverage)
 
-> - **[YYYY-MM-DD · mXX]** Short description.
->   *Why deferred:* …
->   *Earliest mission:* mXX.
+1. **M04 — Text rendering (glyphon + wgpu)**  
+   Render `TextBuffer` content in `editor-render`; `editor-ui` layout for gutter placeholder.
 
----
+2. **M05 — Frame loop + input wiring**  
+   Connect `editor-input::map_key_event` to an `EditorState` in `editor-app` (buffer + cursor + selection); hit input-to-pixel budgets.
 
-## Open
+3. **M06 — File I/O**  
+   Async load/save, atomic writes, encoding detection in `editor-io`.
 
-- **[2026-04-20 · M01]** GitHub Actions is deprecating Node.js 20 (used by
-  `actions/checkout@v4` and similar). Node 20 support is removed September
-  2026; starting June 2026 actions are forced to Node 24.
-  *Why deferred:* Non-blocking warning only; Node 24 migration requires
-  testing all third-party actions we use. Not a performance issue.
-  *Earliest mission:* M11 (release engineering) or whenever GitHub prompts
-  again, whichever is sooner.
+4. **M07–M08 — Observability + MVP acceptance**  
+   Dev overlay, Criterion baselines, stress tests, `docs/MVP_ACCEPTANCE.md` rows.
 
-- **[2026-04-20 · M01]** `cosmic-text` version is not yet pinned in
-  `docs/TECH_STACK.md`; it must be chosen to be compatible with `glyphon`
-  at M04 adoption time.
-  *Why deferred:* Cannot pin accurately until we know which `glyphon`
-  minor we consume and what its transitive `cosmic-text` bound is.
-  *Earliest mission:* M04.
+5. **M09–M10 — V2**  
+   Line numbers, selection, clipboard, undo UI, status bar, `state.json` persistence.
 
-## Resolved
+6. **M11+**  
+   Packaging (M11), then V3 missions M12–M24 per [`docs/missions/00_V3_VISION.md`](docs/missions/00_V3_VISION.md).
 
-*(none yet)*
+## Documentation
+
+- Flesh out `docs/ARCHITECTURE.md` (crate graph, threads, frame phases) as M04+ land.
+- Keep `docs/STATUS.md` in sync with the checklist above after each mission closes.
+
+## Process
+
+- Canonical mission list: [`docs/missions/00_MISSION_INDEX.md`](docs/missions/00_MISSION_INDEX.md).
+- Historical references to `/00_MISSION_INDEX.md` at repo root mean the same content now under `docs/missions/`.

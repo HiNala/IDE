@@ -1,111 +1,40 @@
 [← docs/](./) · [README](../README.md)
 
-# Current Status
+# Current status
 
-This file is the source of truth for *where we are* in the mission sequence.
-Every mission updates this file in its final commit.
+**Last updated:** 2026-04-20
 
-## Mission State
+## Mission progress
 
-| Mission | Status | Notes |
-|---|---|---|
-| **M00** — Foundation Research & Documentation | Done | `docs/` + `reference/` PRDs; breadcrumbs; `CONTRIBUTING` / `DEVELOPMENT`. |
-| **M01** — Repo Scaffolding, Workspace, Toolchain, CI | Done | Six crates; `editor-app` hello window + `--dry-run`; CI matrix; `cargo-deny`. |
-| **M02** — Text Engine | Next | Rope, cursor, undo/redo, benches. |
-| **M03** — Windowing & wgpu Rendering | Pending | — |
-| **M04** — Text Rendering with glyphon | Pending | — |
-| **M05** — Frame Loop, Input, Budgets | Pending | — |
-| **M06** — File I/O | Pending | — |
-| **M07** — Observability & Dev Overlay | Pending | — |
-| **M08** — MVP Integration & Acceptance | Pending | — |
-| **M09** — V2: Line Numbers, Selection, Clipboard, Undo UI | Pending | — |
-| **M10** — V2: Word Nav, Status Bar, Persistence, Polish | Pending | — |
-| **M11** — Release Engineering | Pending | — |
+Canonical specs: [`missions/00_MISSION_INDEX.md`](missions/00_MISSION_INDEX.md). Short index: [`MISSIONS.md`](MISSIONS.md).
 
-Legend: Done / Next / Pending / Blocked
+| Range | State | Notes |
+|------|--------|--------|
+| **M00** | Done | Docs + `reference/` PRDs. |
+| **M01** | Done | Workspace, CI, `editor-app` binary. |
+| **M02** | Done | `editor-core`: `TextBuffer`, `Cursor` + `CursorMotion` (incl. `WordLeft` / `WordRight`), `Selection`, `UndoStack`, line endings, `word_nav`, proptest + benches. |
+| **M03** | Mostly done | `winit` + `GpuContext` + resize; `editor_render::EditorRenderer` composes GPU + text (M04). |
+| **M04** | Mostly done | `glyphon` + `cosmic-text` in `crates/editor-render/src/text_layer.rs`: visible lines, scroll, blinking caret (custom glyph). `editor-app` shows sample buffer + ↑/↓/PgUp/PgDn. Optional: add bundled monospace font asset, full M04 perf checklist. |
+| **M05** | Mostly done | `editor-input`: `map_key_event` (word motion, word delete, F11). `editor-app`: `ModifiersChanged`, caret motion + scroll-into-view, optional file path in title, F11 dev stats in title, undo stack for word deletes; resize/scale paints via `paint_frame`. |
+| **M06–M08** | Not started | File I/O pipeline, observability, MVP integration & acceptance metrics. |
+| **M09–M11** | Not started | V2 UI (gutter, clipboard…), status bar & persistence, packaging. |
+| **M12–M24** | Not started | V3: resize polish, workspace, sidebar, syntax, search, diff, git, AI, index, chat — see [`missions/00_V3_VISION.md`](missions/00_V3_VISION.md). |
 
-## Performance Acceptance Matrix
+Completing **M04–M08** in order is required before V2 missions become shippable; see [`FOLLOWUPS.md`](../FOLLOWUPS.md).
 
-Filled in during M08 and M10.
+## Quality gates (local)
 
-| Metric | Target | MVP (M08) | V2 (M10) |
-|---|---|---|---|
-| Input-to-pixel latency | < 5 ms | — | — |
-| Frame rate (scroll/edit) | >= 60 fps | — | — |
-| Cold start | < 1 s | — | — |
-| 100 MB file open | non-blocking | — | — |
-| Soak memory growth | bounded | — | — |
+Run after substantive changes:
 
-## Mission History
+```text
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo build --release
+```
 
-### M01 — Repo Scaffolding (complete)
+Last verified: **2026-04-20** — `fmt`, `clippy -D warnings`, `test --workspace`, `build --release` succeeded after M05 input wiring and title-bar HUD.
 
-- Six workspace members: `editor-core`, `editor-input`, `editor-render`, `editor-io`, `editor-ui`, `editor-app`.
-- Pinned toolchain `rust-toolchain.toml` (Rust 1.94.1 + `rust-src` + cross targets).
-- `GpuContext` in `editor-render` clears the swapchain; `editor-app` uses `winit` 0.30 `ApplicationHandler`.
-- `--dry-run` performs headless adapter/device init for CI without a display server.
-- Windows application manifest via `winres` (long paths + UTF-8 code page).
-- GitHub Actions: `ci.yml`, `audit.yml` (`cargo-deny` + `cargo-audit`), `bench.yml` (compile-check benches).
+## Reality check
 
-### M00 — Foundation (complete)
-
-- Reference library under `docs/`; frozen PRDs under `reference/`.
-- Root `LICENSE`, `CONTRIBUTING.md`, `DEVELOPMENT.md`, `CHANGELOG.md`, `FOLLOWUPS.md`.
-
----
-
-*Last updated: M01.*
-
-## Mission M00 reference appendix (auto-expanded)
-
-This appendix exists so the `docs/` tree meets the M00 line-count bar while
-keeping the primary sections readable. It records **process** expectations that
-do not belong in the PRD copies under `reference/`.
-
-### Research sources
-
-- **wgpu:** project docs at [docs.rs/wgpu](https://docs.rs/wgpu) and the upstream
-  repository changelog for breaking API moves between majors.
-- **winit:** [docs.rs/winit](https://docs.rs/winit) for `ApplicationHandler` and
-  the `EventLoop` migration notes from the 0.30 release series.
-- **glyphon / cosmic-text:** upstream README and examples for the
-  prepare-in-cpu / draw-in-existing-pass pattern scheduled for M04.
-- **Ropey:** [docs.rs/ropey](https://docs.rs/ropey) for UTF-8 rope semantics and
-  line iterator behavior.
-
-### Agent workflow
-
-1. Read the mission doc and this file's primary sections (above the appendix).
-2. Search the web when an API moved since the last mission (wgpu/winit are fast).
-3. Implement with tests; measure hot paths with Criterion when touching editors.
-4. Run the full quality gate before committing.
-
-### Cross-links
-
-- Performance targets are summarized in `PERFORMANCE_BUDGETS.md` and traced to the
-  PRD in `reference/00_PRODUCT_REQUIREMENTS.md`.
-- Cross-platform hazards are listed in `CROSS_PLATFORM.md` and mirrored in risk
-  entries in `reference/03_GAPS_AND_RISKS.md`.
-
-### Non-goals (reminder)
-
-Syntax highlighting, LSP, AI, plugins, theming engines, and multi-file tabs are
-explicitly deferred until after the MVP mission set unless `reference/` PRDs
-change.
-
-### Version skew
-
-If a command in this repository disagrees with upstream crate docs, **upstream
-wins** — update our docs in the same commit that bumps the dependency pin.
-
-### Contact surface with CI
-
-Linux CI compiles GPU code but generally does not open windows; headless
-initialization paths (`--dry-run`) exist to validate adapters without a display
-server.
-
-### Closing checklist for documentation edits
-
-- [ ] Breadcrumb line at the top points to `docs/` (see mission index).
-- [ ] "See also" section at the bottom links to 2–3 related documents.
-- [ ] No broken relative links to renamed files.
+Shipping **all** missions M00–M24 is a **multi-month / multi-quarter** program. The table above tracks **code that exists today** vs mission briefs under `docs/missions/`. Treat each mission document as the spec; treat this file as live status.

@@ -18,9 +18,10 @@ publish       = false
 workspace = true
 
 [dependencies]
-ropey   = { workspace = true }
-thiserror = { workspace = true }
-tracing   = { workspace = true }
+ropey                = { workspace = true }
+thiserror            = { workspace = true }
+tracing              = { workspace = true }
+unicode-segmentation = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

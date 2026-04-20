@@ -20,4 +20,10 @@ pub enum RenderError {
     /// Surface could not provide a drawable texture (lost, timed out, etc.).
     #[error("no drawable surface texture: {0}")]
     SurfaceTexture(&'static str),
+    /// Glyph atlas / shaping preparation failed.
+    #[error("glyphon prepare: {0}")]
+    TextPrepare(String),
+    /// Text draw failed inside the render pass.
+    #[error("glyphon render: {0}")]
+    TextRender(String),
 }

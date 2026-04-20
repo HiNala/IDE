@@ -1,8 +1,4 @@
-# Project-wide rustfmt configuration.
-#
-# Only stable rustfmt options. Nightly-only options (imports_granularity,
-# group_imports, wrap_comments, comment_width) are intentionally omitted so
-# `cargo fmt` works identically on stable CI runners.
+# Project-wide rustfmt configuration (stable `rustfmt` from `rust-toolchain.toml`).
 
 edition = "2021"
 max_width = 100
@@ -11,3 +7,5 @@ use_field_init_shorthand = true
 use_try_shorthand = true
 reorder_imports = true
 reorder_modules = true
+use_small_heuristics = "Max"
+# `imports_granularity` / `group_imports` require nightly rustfmt; keep stable CI green.

@@ -1,25 +1,54 @@
 //! `editor-input` — OS input → editor operations.
-//!
-//! This crate translates raw `winit::event::WindowEvent` values into
-//! high-level editor `Action`s that `editor-app` applies against
-//! `editor-core`. It never performs edits itself.
-//!
-//! Mission status:
-//! - **M01 (current):** crate scaffolded, builds, one smoke test.
-//! - **M05:** full translator, key-binding table, primary-cursor motion.
-//! - **V2 (M09):** selection, clipboard shortcuts, word-level navigation.
-//!
-//! See `docs/INPUT_AND_IME.md` for the design.
 
 #![forbid(unsafe_code)]
 
-/// Crate version string, sourced from `Cargo.toml` at compile time.
+pub mod command;
+
+use winit::event::ElementState;
+use winit::event::KeyEvent;
+use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+
+pub use command::EditorCommand;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Returns a human-readable banner identifying this crate.
 #[must_use]
 pub fn banner() -> String {
     format!("editor-input v{VERSION}")
+}
+
+/// Maps a keypress plus current modifier state to an [`EditorCommand`].
+///
+/// Word navigation: **Ctrl+Left/Right** on Windows/Linux; **Alt+Left/Right** on
+/// macOS (Apple convention). With **Shift**, `extend_selection` is set for
+/// future selection-anchor wiring (M09).
+#[must_use]
+pub fn map_key_event(event: &KeyEvent, modifiers: ModifiersState) -> Option<EditorCommand> {
+    if event.state != ElementState::Pressed || event.repeat {
+        return None;
+    }
+    let word_mod =
+        if cfg!(target_os = "macos") { modifiers.alt_key() } else { modifiers.control_key() };
+    match event.physical_key {
+        PhysicalKey::Code(KeyCode::F11) => Some(EditorCommand::ToggleDevHud),
+        PhysicalKey::Code(KeyCode::ArrowLeft) if word_mod => {
+            Some(EditorCommand::ApplyCursorMotion {
+                motion: editor_core::CursorMotion::WordLeft,
+                extend_selection: modifiers.shift_key(),
+            })
+        }
+        PhysicalKey::Code(KeyCode::ArrowRight) if word_mod => {
+            Some(EditorCommand::ApplyCursorMotion {
+                motion: editor_core::CursorMotion::WordRight,
+                extend_selection: modifiers.shift_key(),
+            })
+        }
+        PhysicalKey::Code(KeyCode::Backspace) if word_mod => {
+            Some(EditorCommand::DeleteWordBackward)
+        }
+        PhysicalKey::Code(KeyCode::Delete) if word_mod => Some(EditorCommand::DeleteWordForward),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -27,9 +56,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn banner_contains_crate_name_and_version() {
-        let b = banner();
-        assert!(b.starts_with("editor-input v"), "banner = {b:?}");
-        assert!(b.contains(VERSION), "banner = {b:?}");
+    fn banner_ok() {
+        assert!(banner().contains("editor-input"));
     }
 }

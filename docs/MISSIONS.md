@@ -2,6 +2,8 @@
 
 # Mission Index
 
+**Full mission documents (M00–M24):** [`docs/missions/`](missions/) (see also [`missions/00_MISSION_INDEX.md`](missions/00_MISSION_INDEX.md)).
+
 Missions run in strict order. Each assumes the previous is complete. Each
 leaves the repository with `cargo fmt`, `cargo clippy`, `cargo test`, and
 `cargo build --release` all green on Windows (and on CI, on Linux and

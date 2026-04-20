@@ -6,11 +6,15 @@
 
 #![forbid(unsafe_code)]
 
+mod editor_renderer;
 mod error;
 mod gpu;
+mod text_layer;
 
+pub use editor_renderer::{EditorRenderer, FrameInput};
 pub use error::RenderError;
 pub use gpu::{dry_run_headless, GpuContext};
+pub use text_layer::TextLayer;
 
 /// Crate version string, sourced from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

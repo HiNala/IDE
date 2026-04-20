@@ -1,37 +1,19 @@
 name: CI
 
-# The quality-gate matrix: Windows, Linux, and macOS must all stay green on
-# every push and every PR to `main`.
+# Quality gate: `fmt` on Ubuntu; `clippy`, `test`, and `build --release` on
+# Windows, Linux, and macOS. Linux runners have no display server — we compile
+# and run tests (including `editor-app --dry-run` headless GPU init) but do not
+# launch the full windowed binary in CI.
 #
-# Steps per OS:
-#   1. checkout
-#   2. install the pinned toolchain (rustfmt + clippy)
-#   3. restore cargo cache
-#   4. OS-specific system prerequisites (Linux X11 / Wayland / Vulkan headers)
-#   5. cargo fmt --check
-#   6. cargo clippy -D warnings
-#   7. cargo test --all --locked
-#   8. cargo build --release --workspace --locked
-#
-# Linux runners have no display server; we build and run tests (including
-# `editor-app --dry-run`) but do not launch the full windowed binary in CI.
-#
-# The toolchain is taken from rust-toolchain.toml — we do not hard-code a
-# version here so upgrades are a one-line change in the pin file.
+# Toolchain: `actions-rust-lang/setup-rust-toolchain@v1` reads `rust-toolchain.toml`.
 
 on:
   push:
-    branches: [main]
-    tags:
-      - "m*-complete"
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
-  # Fail on any warning. Redundant with -D warnings but catches anything that
-  # slips through a rustc change.
   RUSTFLAGS: "-D warnings"
   RUST_BACKTRACE: 1
 
@@ -40,31 +22,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # --------------------------------------------------------------------------
-  # Primary quality-gate matrix.
-  # --------------------------------------------------------------------------
-  check:
-    name: check / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install toolchain (from rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "ci-${{ matrix.os }}"
+          shared-key: clippy-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -74,37 +57,50 @@ jobs:
             libwayland-dev libxkbcommon-dev \
             libvulkan-dev mesa-vulkan-drivers \
             libasound2-dev pkg-config
+      - name: MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-      - name: rustc / cargo versions
+  test:
+    name: test / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
         run: |
-          rustc --version
-          cargo --version
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev \
+            libvulkan-dev mesa-vulkan-drivers \
+            libasound2-dev pkg-config
+      - name: MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - run: cargo test --workspace --all-features --locked
+      - run: cargo build --release --workspace --locked
 
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
-
-      - name: cargo test
-        run: cargo test --all --all-features --locked
-
-      - name: cargo build --release
-        run: cargo build --release --workspace --locked
-
-  # --------------------------------------------------------------------------
-  # Docs build (Linux only; checks intra-doc links so broken references fail
-  # CI before they land).
-  # --------------------------------------------------------------------------
   docs:
     name: docs (rustdoc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "ci-ubuntu-latest"
+          shared-key: docs-ubuntu-latest
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
@@ -114,16 +110,17 @@ jobs:
       - name: cargo doc
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --all --no-deps --all-features --locked
+        run: cargo doc --workspace --no-deps --all-features --locked
 
-  # --------------------------------------------------------------------------
-  # Supply-chain audit. Blocking: licenses/advisories/bans must stay clean.
-  # --------------------------------------------------------------------------
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: deny-ubuntu
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check bans licenses sources advisories

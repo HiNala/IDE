@@ -1,0 +1,2 @@
+JetBrains Mono — see upstream: https://github.com/JetBrains/JetBrainsMono
+Licensed under SIL Open Font License 1.1 (OFL-1.1).

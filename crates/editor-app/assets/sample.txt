@@ -1,0 +1,4 @@
+IDE sample buffer (M04)
+Line two
+Line three — UTF-8: café, 你好
+More lines follow when you add a real file path as the first CLI argument.

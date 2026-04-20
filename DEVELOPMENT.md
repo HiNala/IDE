@@ -87,3 +87,14 @@ git config core.hooksPath .githooks
 GitHub Actions runs the same `fmt`, `clippy`, `test`, and `release` build steps
 on Windows, Ubuntu, and macOS. Linux CI does **not** launch a GUI window; it
 builds the binary and runs `--dry-run` / unit tests only.
+
+## 9. Process exit codes (`editor-app`)
+
+| Code | Meaning |
+|------|---------|
+| `0` | Normal exit (user closed window, `--dry-run` OK, `--help`). |
+| `1` | Generic failure (`anyhow` error from GPU init, event loop, etc.). |
+| `2` | Reserved for **unrecoverable GPU** after a failed recovery attempt (wired in M08+). |
+| `64` | **Invalid CLI** — unknown flags (BSD `EX_USAGE`). |
+
+Panics use the Rust runtime default (non-zero on most platforms).

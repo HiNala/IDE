@@ -1,14 +1,5 @@
 ###############################################################################
-# IDE workspace
-#
-# A performance-first, native code editor written in Rust.
-#
-# See:
-#   - docs/ARCHITECTURE.md    — crate boundaries and subsystem map
-#   - docs/TECH_STACK.md      — dependency choices
-#   - docs/MISSIONS.md        — per-mission scope and definition of done
-#
-# Virtual manifest (no `[package]`): the workspace root is not a crate.
+# IDE workspace — virtual manifest (no `[package]` at root).
 ###############################################################################
 
 [workspace]
@@ -23,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version       = "0.1.0-m01"
+version       = "0.1.0-mvp"
 edition       = "2021"
 rust-version  = "1.94.1"
 authors       = ["HiNala <nalamaui30@gmail.com>"]
@@ -56,21 +47,27 @@ missing_panics_doc            = "allow"
 
 [workspace.dependencies]
 anyhow              = "1.0"
-thiserror           = "1.0"
+thiserror           = "2"
 tracing             = "0.1"
-tracing-subscriber  = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber  = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 winit               = "0.30"
 wgpu                = "29"
 pollster            = "0.4"
 ropey               = "1.6"
+unicode-segmentation = "1.13"
 raw-window-handle   = "0.6"
 bytemuck            = { version = "1.16", features = ["derive"] }
 memmap2             = "0.9"
-arboard               = "3"
+arboard             = "3"
 parking_lot         = "0.12"
 criterion           = { version = "0.5", features = ["html_reports"] }
 proptest            = "1"
 insta               = "1"
+memory-stats        = "1.0"
+serde               = { version = "1", features = ["derive"] }
+serde_json          = "1"
+directories         = "6"
+tempfile            = "3"
 
 [profile.release]
 opt-level     = 3
