@@ -6,11 +6,16 @@ use std::path::Path;
 use editor_core::{LineEnding, TextBufferSnapshot};
 use ropey::Rope;
 use tempfile::NamedTempFile;
+use tracing::instrument;
 
 use crate::paths::is_windows_reserved_path;
 use crate::types::{Encoding, SaveError};
 
 /// Write `snapshot` to `path` using a temp file in the same directory, then rename.
+#[instrument(
+    fields(path = %path.display(), snapshot_version = snapshot.version()),
+    skip(path, snapshot)
+)]
 pub fn save_file_sync(
     path: &Path,
     snapshot: &TextBufferSnapshot,

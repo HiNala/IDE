@@ -40,6 +40,11 @@ cargo build --release --workspace --locked
 On Windows, also run `cargo run --release --bin editor-app` periodically and
 close the window to verify a clean exit.
 
+When Criterion baseline comparison is enabled in CI (see `docs/missions/M07_*.md`),
+a PR that regresses tracked benches beyond the threshold may fail. If a regression
+is intentional, add the `perf-allow-regression` label on the PR (once the workflow
+supports it) and document the tradeoff in the PR description.
+
 ## Cross-platform
 
 Primary development is on Windows; CI runs Windows, Linux, and macOS. Any code

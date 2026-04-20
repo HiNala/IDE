@@ -135,11 +135,13 @@ fn run() -> Result<(), ExitCode> {
             print_help();
             return Ok(());
         }
-        if a.starts_with("--") && !matches!(a.as_str(), "--dry-run" | "--log-json") {
+        if a.starts_with("--") && !matches!(a.as_str(), "--dry-run" | "--log-json" | "--dev-hud") {
             eprintln!("editor-app: unknown option: {a}");
             return Err(ExitCode::from(64));
         }
     }
+
+    let start_dev_hud = args.iter().any(|a| a == "--dev-hud");
 
     if args.iter().any(|a| a == "--dry-run") {
         if let Err(e) = run_dry_run() {
@@ -152,7 +154,7 @@ fn run() -> Result<(), ExitCode> {
     let persisted = config::PersistedState::load();
     let open_arg = args.iter().find(|a| !a.starts_with('-')).cloned();
     let plan = resolve_initial_plan(open_arg, &persisted);
-    if let Err(e) = run_windowed(plan, persisted) {
+    if let Err(e) = run_windowed(plan, persisted, start_dev_hud) {
         eprintln!("{e:#}");
         return Err(ExitCode::FAILURE);
     }
@@ -165,13 +167,14 @@ fn print_help() {
 editor-app — IDE binary (MVP in progress)
 
 Usage:
-  editor-app [path/to/file.txt] [--dry-run] [--help]
+  editor-app [path/to/file.txt] [--dry-run] [--dev-hud] [--help]
 
 Arguments:
   path        Optional UTF-8 text file to open (falls back to bundled sample on error).
 
 Options:
   --dry-run   Headless GPU adapter/device init (no window).
+  --dev-hud   Start with the F11 metrics overlay visible (same as pressing F11).
   --log-json  Emit tracing logs as JSON lines (for tooling); still obeys RUST_LOG.
   -h, --help  Show this help.
 "
@@ -185,7 +188,11 @@ fn run_dry_run() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_windowed(plan: InitialLoadPlan, persisted: config::PersistedState) -> anyhow::Result<()> {
+fn run_windowed(
+    plan: InitialLoadPlan,
+    persisted: config::PersistedState,
+    start_dev_hud: bool,
+) -> anyhow::Result<()> {
     info!(version = VERSION, "ide: starting windowed mode");
     info!("linked: {}", editor_core::banner());
     info!("linked: {}", editor_render::banner());
@@ -240,7 +247,7 @@ fn run_windowed(plan: InitialLoadPlan, persisted: config::PersistedState) -> any
         blink_on: true,
         undo: UndoStack::default(),
         modifiers: ModifiersState::default(),
-        dev_hud: false,
+        dev_hud: start_dev_hud,
         open_path,
         document_loading,
         worker_pool,
@@ -476,6 +483,35 @@ impl App {
         self.scroll_cursor_into_view();
     }
 
+    /// Bottom Y of the text region in physical pixels (content above the status bar).
+    fn text_content_bottom_px(&self) -> Option<f64> {
+        let w = self.window.as_ref()?;
+        Some(f64::from(w.inner_size().height) - f64::from(self.status_bar_height_px()))
+    }
+
+    /// Scroll by one line when the pointer sits in the top/bottom margin during drag (M09 §6.8).
+    fn autoscroll_drag_edges(&mut self, y_px: f64) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let Some(content_bottom) = self.text_content_bottom_px() else {
+            return;
+        };
+        if content_bottom <= 1.0 {
+            return;
+        }
+        let line_h = renderer.line_height_px();
+        let edge = 20.0_f64.min(content_bottom / 3.0).max(4.0);
+        if y_px < edge {
+            self.scroll.y_px = (self.scroll.y_px - line_h).max(0.0);
+        } else if y_px > content_bottom - edge {
+            self.scroll.y_px += line_h;
+        } else {
+            return;
+        }
+        self.clamp_scroll();
+    }
+
     /// Map physical window pixel to a UTF-8 boundary byte offset (M09; matches `editor-render` layout).
     fn hit_test_byte(&self, x_px: f64, y_px: f64) -> Option<BytePos> {
         let renderer = self.renderer.as_ref()?;
@@ -573,7 +609,14 @@ impl App {
         if self.document_loading {
             return;
         }
-        let Some(byte) = self.hit_test_byte(x_px as f64, y_px as f64) else {
+        let y = y_px as f64;
+        self.autoscroll_drag_edges(y);
+        let Some(cb) = self.text_content_bottom_px() else {
+            return;
+        };
+        let y_max = (cb - 1.0).max(0.0);
+        let y_clamped = y.clamp(0.0, y_max);
+        let Some(byte) = self.hit_test_byte(x_px as f64, y_clamped) else {
             return;
         };
         let anchor = self.drag_anchor.unwrap_or_else(|| self.cursor.pos());

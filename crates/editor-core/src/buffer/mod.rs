@@ -9,6 +9,7 @@ pub use line_ending::LineEnding;
 use std::ops::Range;
 
 use ropey::Rope;
+use tracing::instrument;
 
 use crate::buffer::line_ending::normalize_to_lf;
 use crate::position::{BytePos, LineCol};
@@ -268,6 +269,7 @@ impl TextBuffer {
     }
 
     /// Apply an [`EditKind`], assign sequence number, bump version.
+    #[instrument(level = "trace", skip(self, kind))]
     pub fn apply_edit(&mut self, kind: EditKind) -> CoreResult<Edit> {
         let seq = self.next_edit_seq;
         self.next_edit_seq += 1;

@@ -30,7 +30,7 @@ cargo build --release
 
 Optional: `cargo bench -p editor-core`, `editor-app --dry-run`.
 
-Last verified: **2026-04-20** — `cargo fmt --check`, `clippy --workspace --all-targets --all-features -- -D warnings`, `test --workspace`, `build --release -p editor-app`.
+Last verified: **2026-04-20** — `cargo fmt --check`, `clippy --workspace --all-targets --all-features --locked -- -D warnings`, `test --workspace --all-features --locked`, `build --release -p editor-app --locked`; tracing spans on `load_file_sync` / `save_file_sync` / `apply_edit`; `--dev-hud` CLI.
 
 ## Canonical specs
 

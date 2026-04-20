@@ -6,7 +6,7 @@ use std::path::Path;
 
 use editor_core::{LineEnding, TextBuffer};
 use memmap2::Mmap;
-use tracing::warn;
+use tracing::{instrument, warn};
 
 use crate::types::{Encoding, LoadError, LoadedFile};
 
@@ -14,6 +14,7 @@ use crate::types::{Encoding, LoadError, LoadedFile};
 pub const MMAP_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Read full file into memory, using mmap for large files when possible.
+#[instrument(fields(path = %path.display()), skip(path))]
 pub fn load_file_sync(path: &Path) -> Result<LoadedFile, LoadError> {
     let meta = std::fs::metadata(path)?;
     if meta.is_dir() {
