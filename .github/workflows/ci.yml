@@ -1,0 +1,129 @@
+name: CI
+
+# The quality-gate matrix: Windows, Linux, and macOS must all stay green on
+# every push and every PR to `main`.
+#
+# Steps per OS:
+#   1. checkout
+#   2. install the pinned toolchain (rustfmt + clippy)
+#   3. restore cargo cache
+#   4. OS-specific system prerequisites (Linux X11 / Wayland / Vulkan headers)
+#   5. cargo fmt --check
+#   6. cargo clippy -D warnings
+#   7. cargo test --all --locked
+#   8. cargo build --release --locked
+#
+# The toolchain is taken from rust-toolchain.toml — we do not hard-code a
+# version here so upgrades are a one-line change in the pin file.
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "m*-complete"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail on any warning. Redundant with -D warnings but catches anything that
+  # slips through a rustc change.
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Primary quality-gate matrix.
+  # --------------------------------------------------------------------------
+  check:
+    name: check / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-${{ matrix.os }}"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev \
+            libvulkan-dev mesa-vulkan-drivers \
+            libasound2-dev pkg-config
+
+      - name: rustc / cargo versions
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all --all-features --locked
+
+      - name: cargo build --release
+        run: cargo build --release --all --locked
+
+  # --------------------------------------------------------------------------
+  # Docs build (Linux only; checks intra-doc links so broken references fail
+  # CI before they land).
+  # --------------------------------------------------------------------------
+  docs:
+    name: docs (rustdoc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-ubuntu-latest"
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libvulkan-dev pkg-config
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --all --no-deps --all-features --locked
+
+  # --------------------------------------------------------------------------
+  # Supply-chain audit (advisory, non-blocking for now).
+  # Enforced gating is planned for a later mission.
+  # --------------------------------------------------------------------------
+  deny:
+    name: cargo-deny (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources advisories
+          log-level: warn
