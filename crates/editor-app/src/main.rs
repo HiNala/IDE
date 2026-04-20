@@ -23,16 +23,17 @@ use editor_core::{
     BytePos, Cursor, CursorMotion, EditKind, ScrollOffset, Selection, TextBuffer, UndoStack,
     WorkerPool,
 };
-use editor_input::{map_key_event, EditorCommand};
+use editor_input::{map_key_event, scroll_delta_y_pixels, EditorCommand, MouseChordState};
 use editor_io::{load_file_sync, save_file_sync, Encoding, LoadError, LoadedFile, SaveError};
 use tracing::{debug, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, PhysicalSize};
+use winit::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
 use winit::event::ElementState;
 use winit::event::Ime;
+use winit::event::MouseButton;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::ModifiersState;
@@ -254,6 +255,9 @@ fn run_windowed(plan: InitialLoadPlan, persisted: config::PersistedState) -> any
         last_metrics_debug: Instant::now() - Duration::from_secs(2),
         ime_suppress_next_keytext: false,
         selection: Selection::empty(BytePos(cursor_byte0)),
+        mouse_chord: MouseChordState::default(),
+        last_pointer: PhysicalPosition::new(0.0, 0.0),
+        drag_anchor: None,
     };
     app.clamp_cursor_to_buffer();
     event_loop.run_app(&mut app)?;
@@ -290,6 +294,12 @@ struct App {
     ime_suppress_next_keytext: bool,
     /// Single anchor/head region; collapsed when anchor == head (caret only).
     selection: Selection,
+    /// Multi-click + drag tracking (M09).
+    mouse_chord: MouseChordState,
+    /// Latest pointer position in physical pixels (for [`WindowEvent::MouseInput`] which has no coords).
+    last_pointer: PhysicalPosition<f64>,
+    /// Byte where a simple-click drag started (anchor for drag selection).
+    drag_anchor: Option<BytePos>,
 }
 
 impl App {
@@ -466,6 +476,113 @@ impl App {
         self.scroll_cursor_into_view();
     }
 
+    /// Map physical window pixel to a UTF-8 boundary byte offset (M09; matches `editor-render` layout).
+    fn hit_test_byte(&self, x_px: f64, y_px: f64) -> Option<BytePos> {
+        let renderer = self.renderer.as_ref()?;
+        let w = self.window.as_ref()?;
+        let physical = w.inner_size();
+        let line_h = renderer.line_height_px();
+        let status_h = self.status_bar_height_px();
+        let (gutter_w, char_w) =
+            editor_render::compute_gutter_width_px(self.buffer.len_lines(), self.scale_factor);
+        let content_bottom = physical.height as f32 - status_h;
+        if y_px < 0.0 || y_px >= content_bottom as f64 {
+            return None;
+        }
+        let total_lines = self.buffer.len_lines();
+        if total_lines == 0 {
+            return Some(BytePos(0));
+        }
+        let y = y_px as f32;
+        let line_idx_f = (y - 4.0 + self.scroll.y_px) / line_h;
+        let mut line_idx = line_idx_f.floor() as isize;
+        if line_idx < 0 {
+            line_idx = 0;
+        }
+        let mut line_idx = line_idx as usize;
+        if line_idx >= total_lines {
+            line_idx = total_lines.saturating_sub(1);
+        }
+        let body_left = 8.0 + gutter_w;
+        let dx = x_px as f32 - body_left;
+        let line_start = self.buffer.line_to_byte(line_idx).ok()?;
+        let line_len = self.buffer.line_len_bytes(line_idx).ok()?;
+        let col_byte = if dx <= 0.0 { 0usize } else { (dx / char_w.max(1e-6)).floor() as usize };
+        let col_byte = col_byte.min(line_len);
+        let mut byte = line_start + col_byte;
+        while byte > line_start && !self.buffer.is_char_boundary(BytePos(byte)) {
+            byte -= 1;
+        }
+        Some(BytePos(byte))
+    }
+
+    fn apply_mouse_click(&mut self, x_px: i32, y_px: i32, click_count: u8, shift: bool) {
+        if self.document_loading {
+            return;
+        }
+        let x = x_px as f64;
+        let y = y_px as f64;
+        let Some(byte) = self.hit_test_byte(x, y) else {
+            return;
+        };
+        match click_count {
+            2 => {
+                self.drag_anchor = None;
+                let s = self.buffer.to_text();
+                let lo = editor_core::word_left(&s, byte.0);
+                let hi = editor_core::word_right(&s, byte.0);
+                self.selection = Selection { anchor: BytePos(lo), head: BytePos(hi) };
+                self.cursor = Cursor::new(BytePos(hi));
+            }
+            3 => {
+                self.drag_anchor = None;
+                let Ok(lc) = self.buffer.byte_to_line_col(byte) else {
+                    return;
+                };
+                let line = lc.line;
+                let Ok(line_start) = self.buffer.line_to_byte(line) else {
+                    return;
+                };
+                let Ok(line_len) = self.buffer.line_len_bytes(line) else {
+                    return;
+                };
+                let end = line_start + line_len;
+                self.selection = Selection { anchor: BytePos(line_start), head: BytePos(end) };
+                self.cursor = Cursor::new(BytePos(end));
+            }
+            _ => {
+                if shift {
+                    if self.selection.is_empty() {
+                        self.selection.anchor = self.cursor.pos();
+                    }
+                    // Keep anchor; move caret and head to click.
+                    self.selection.head = byte;
+                    self.cursor = Cursor::new(byte);
+                    self.drag_anchor = Some(self.selection.anchor);
+                } else {
+                    self.drag_anchor = Some(byte);
+                    self.cursor = Cursor::new(byte);
+                    self.selection = Selection::empty(byte);
+                }
+            }
+        }
+        self.scroll_cursor_into_view();
+    }
+
+    fn apply_mouse_drag(&mut self, x_px: i32, y_px: i32) {
+        if self.document_loading {
+            return;
+        }
+        let Some(byte) = self.hit_test_byte(x_px as f64, y_px as f64) else {
+            return;
+        };
+        let anchor = self.drag_anchor.unwrap_or_else(|| self.cursor.pos());
+        self.selection.anchor = anchor;
+        self.selection.head = byte;
+        self.cursor = Cursor::new(byte);
+        self.scroll_cursor_into_view();
+    }
+
     fn poll_io(&mut self) {
         if let Some(rx) = &self.load_rx {
             if let Ok(res) = rx.try_recv() {
@@ -615,7 +732,7 @@ impl App {
                 scroll: self.scroll,
                 clear_color: CLEAR,
                 cursor_byte: self.cursor.pos().0.min(self.buffer.len_bytes()),
-                cursor_blink_on: self.blink_on,
+                cursor_blink_on: self.blink_on && self.selection.is_empty(),
                 physical_size: physical,
                 scale_factor: self.scale_factor,
                 status: Some(status),
@@ -876,6 +993,19 @@ impl App {
                 }
                 false
             }
+            EditorCommand::MouseClick { x_px, y_px, click_count, shift } => {
+                self.apply_mouse_click(x_px, y_px, click_count, shift);
+                false
+            }
+            EditorCommand::MouseDrag { x_px, y_px } => {
+                self.apply_mouse_drag(x_px, y_px);
+                false
+            }
+            EditorCommand::ScrollContent { delta_y_px } => {
+                self.scroll.y_px -= delta_y_px;
+                self.clamp_scroll();
+                false
+            }
         }
     }
 }
@@ -961,6 +1091,46 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.modifiers = m.state();
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_pointer = position;
+                if let Some(cmd) = self.mouse_chord.on_cursor_moved(position) {
+                    let quit = self.apply_editor_command(cmd);
+                    self.sync_window_title();
+                    self.request_redraw();
+                    if quit {
+                        event_loop.exit();
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if button == MouseButton::Left {
+                    if let Some(cmd) = self.mouse_chord.on_left_button(
+                        state,
+                        button,
+                        self.last_pointer,
+                        self.modifiers,
+                    ) {
+                        let quit = self.apply_editor_command(cmd);
+                        self.sync_window_title();
+                        self.request_redraw();
+                        if quit {
+                            event_loop.exit();
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = scroll_delta_y_pixels(delta, self.scale_factor);
+                if dy != 0.0 {
+                    let quit =
+                        self.apply_editor_command(EditorCommand::ScrollContent { delta_y_px: dy });
+                    self.sync_window_title();
+                    self.request_redraw();
+                    if quit {
+                        event_loop.exit();
+                    }
+                }
             }
             WindowEvent::Ime(ime) => match ime {
                 Ime::Enabled | Ime::Disabled => {}

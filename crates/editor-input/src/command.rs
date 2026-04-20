@@ -56,7 +56,12 @@ pub enum EditorCommand {
         shift: bool,
     },
     /// Left button held and pointer moved (physical pixels).
-    MouseDrag { x_px: i32, y_px: i32 },
+    MouseDrag {
+        x_px: i32,
+        y_px: i32,
+    },
     /// Vertical scroll (positive content delta: move document up, decrease `ScrollOffset.y_px`).
-    ScrollContent { delta_y_px: f32 },
+    ScrollContent {
+        delta_y_px: f32,
+    },
 }

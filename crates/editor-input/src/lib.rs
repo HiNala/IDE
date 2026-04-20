@@ -3,12 +3,14 @@
 #![forbid(unsafe_code)]
 
 pub mod command;
+pub mod mouse;
 
 use winit::event::ElementState;
 use winit::event::KeyEvent;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 
 pub use command::EditorCommand;
+pub use mouse::{scroll_delta_y_pixels, MouseChordState};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
