@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # Concurrency Model
 
 The editor uses ownership-based, message-driven, lock-light concurrency.

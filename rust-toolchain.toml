@@ -4,5 +4,11 @@
 # Reference: https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
 [toolchain]
 channel = "1.94.1"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "rust-src"]
 profile = "default"
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]

@@ -1,0 +1,34 @@
+# Compile-check benchmarks on main (full runs + regression gates come in M07).
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "bench-ubuntu"
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev \
+            libvulkan-dev pkg-config
+
+      - name: Compile benches (no run)
+        run: cargo bench --workspace --no-run --locked

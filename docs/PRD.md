@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # Product Requirements Document (MVP)
 
 This PRD is the in-repo, canonical product requirements document for the MVP.
@@ -59,8 +61,8 @@ Four layers, strictly separated:
 Events flow through bounded channels. The real-time path never waits on the
 background path.
 
-See `ARCHITECTURE.md` at the repo root and `docs/CONCURRENCY.md` for full
-detail.
+See `ARCHITECTURE.md` and `CONCURRENCY.md` (both in this directory) for
+full detail.
 
 ## 5. Text Engine
 
@@ -72,7 +74,7 @@ detail.
 
 Completely decoupled from rendering and input.
 
-See `docs/TEXT_ENGINE.md`.
+See `TEXT_ENGINE.md`.
 
 ## 6. Rendering Engine
 
@@ -83,7 +85,7 @@ See `docs/TEXT_ENGINE.md`.
   re-submit.
 - **Frame-based**, target 60–120 fps.
 
-See `docs/RENDERING.md`.
+See `RENDERING_PIPELINE.md`.
 
 ## 7. Input System
 
@@ -94,7 +96,7 @@ See `docs/RENDERING.md`.
 - MVP covers: typing, arrow keys, backspace, delete, newline, mouse click
   for cursor placement, scrolling.
 
-See `docs/INPUT_PIPELINE.md`.
+See `INPUT_AND_IME.md`.
 
 ## 8. File System
 
@@ -103,7 +105,7 @@ See `docs/INPUT_PIPELINE.md`.
 - Atomic writes via temp + fsync + rename.
 - Decoupled from rendering.
 
-See `docs/FILE_IO.md`.
+See `FILE_IO.md`.
 
 ## 9. Concurrency
 
@@ -112,7 +114,7 @@ See `docs/FILE_IO.md`.
 - Worker pool (tokio multi-threaded runtime): file I/O and future
   background tasks.
 
-See `docs/CONCURRENCY.md`.
+See `CONCURRENCY.md`.
 
 ## 10. Observability
 
@@ -121,7 +123,7 @@ See `docs/CONCURRENCY.md`.
 - Slow-operation warnings captured.
 - Optional per-frame overlay (dev builds).
 
-See `docs/OBSERVABILITY.md`.
+See `OBSERVABILITY.md`.
 
 ## 11. Extensibility (Future-Proofing, Not Built In MVP)
 
@@ -166,8 +168,8 @@ same machine, the editor:
 - Scrolls a 100 MB file without dropped frames while the others stutter.
 - Uses less RAM at idle.
 
-Measurement methodology is in `docs/PERFORMANCE_MODEL.md` and the M08
-acceptance run records evidence in `docs/STATUS.md`.
+Measurement methodology is in `PERFORMANCE_BUDGETS.md` and the M08
+acceptance run records evidence in `STATUS.md`.
 
 ---
 

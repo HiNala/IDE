@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # V2 PRD — Minimal Useful Editor
 
 V2 turns the MVP from a performance-validating engine into something a

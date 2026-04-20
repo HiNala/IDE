@@ -1,0 +1,2 @@
+# Project Clippy defaults (CI uses `cargo clippy -- -D warnings`).
+# Per-crate `#![allow(...)]` handles intentional noise.

@@ -18,11 +18,12 @@ publish       = false
 workspace = true
 
 [dependencies]
-editor-core = { path = "../editor-core" }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
-
-[dev-dependencies]
+editor-core       = { path = "../editor-core" }
+wgpu      = { workspace = true }
+winit     = { workspace = true }
+pollster  = { workspace = true }
+thiserror         = { workspace = true }
+tracing           = { workspace = true }
 
 [features]
 default = []

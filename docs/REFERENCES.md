@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # External References & Prior Art
 
 Sources and prior-art projects that inform this design. Use these as the
@@ -129,7 +131,7 @@ instant feel) is the bar we are chasing.
 
 - VS Code input latency measurements — various blog posts and
   Microsoft-internal presentations. Our measurement methodology
-  mirrors theirs so results are comparable (`docs/PERFORMANCE_MODEL.md`).
+  mirrors theirs so results are comparable (`PERFORMANCE_BUDGETS.md`).
 - Cursor startup and input latency — community-measured.
 
 ## 6. Windows-Specific References

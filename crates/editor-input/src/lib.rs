@@ -9,7 +9,7 @@
 //! - **M05:** full translator, key-binding table, primary-cursor motion.
 //! - **V2 (M09):** selection, clipboard shortcuts, word-level navigation.
 //!
-//! See `docs/INPUT_PIPELINE.md` for the design.
+//! See `docs/INPUT_AND_IME.md` for the design.
 
 #![forbid(unsafe_code)]
 

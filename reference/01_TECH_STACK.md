@@ -127,7 +127,7 @@ export `thiserror`-based enums. Only `editor-app` uses `anyhow`.
 
 MSRV tracks the current stable toolchain minus at most two releases. At
 project start this is effectively `1.92`. CI runs MSRV checks weekly; see
-`docs/CROSS_PLATFORM.md` for the CI matrix detail.
+`CROSS_PLATFORM.md` for the CI matrix detail.
 
 ## Licensing Audit
 

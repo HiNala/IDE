@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # File I/O
 
 File I/O lives in `editor-io`. It is the only crate allowed to touch disk.
@@ -94,7 +96,7 @@ been explicitly converted (not an MVP feature).
 
 ## 6. Concurrency Model (Recap)
 
-See `docs/CONCURRENCY.md` §4.
+See `CONCURRENCY.md` §4.
 
 - Load and save both run on the tokio worker pool.
 - Results posted back to main via a `crossbeam_channel::bounded(32)`.

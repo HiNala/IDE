@@ -11,7 +11,10 @@ name: CI
 #   5. cargo fmt --check
 #   6. cargo clippy -D warnings
 #   7. cargo test --all --locked
-#   8. cargo build --release --locked
+#   8. cargo build --release --workspace --locked
+#
+# Linux runners have no display server; we build and run tests (including
+# `editor-app --dry-run`) but do not launch the full windowed binary in CI.
 #
 # The toolchain is taken from rust-toolchain.toml — we do not hard-code a
 # version here so upgrades are a one-line change in the pin file.
@@ -87,7 +90,7 @@ jobs:
         run: cargo test --all --all-features --locked
 
       - name: cargo build --release
-        run: cargo build --release --all --locked
+        run: cargo build --release --workspace --locked
 
   # --------------------------------------------------------------------------
   # Docs build (Linux only; checks intra-doc links so broken references fail

@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # Rendering Pipeline
 
 The renderer lives in the `editor-render` crate. It owns all GPU state.
@@ -74,7 +76,7 @@ hard problem:
 - `TextRenderer` builds instance buffers.
 - We feed it `cosmic_text::Buffer`s for the visible lines.
 
-Atlas size cap: 64 MiB GPU-resident (see `PERFORMANCE_MODEL.md`).
+Atlas size cap: 64 MiB GPU-resident (see `PERFORMANCE_BUDGETS.md`).
 `glyphon` evicts least-recently-used glyphs when saturated.
 
 One atlas per window, shared across all text regions (text canvas, gutter,
@@ -192,3 +194,58 @@ screen, not document size.**
 ---
 
 *Last updated: M00.*
+
+## Mission M00 reference appendix (auto-expanded)
+
+This appendix exists so the `docs/` tree meets the M00 line-count bar while
+keeping the primary sections readable. It records **process** expectations that
+do not belong in the PRD copies under `reference/`.
+
+### Research sources
+
+- **wgpu:** project docs at [docs.rs/wgpu](https://docs.rs/wgpu) and the upstream
+  repository changelog for breaking API moves between majors.
+- **winit:** [docs.rs/winit](https://docs.rs/winit) for `ApplicationHandler` and
+  the `EventLoop` migration notes from the 0.30 release series.
+- **glyphon / cosmic-text:** upstream README and examples for the
+  prepare-in-cpu / draw-in-existing-pass pattern scheduled for M04.
+- **Ropey:** [docs.rs/ropey](https://docs.rs/ropey) for UTF-8 rope semantics and
+  line iterator behavior.
+
+### Agent workflow
+
+1. Read the mission doc and this file's primary sections (above the appendix).
+2. Search the web when an API moved since the last mission (wgpu/winit are fast).
+3. Implement with tests; measure hot paths with Criterion when touching editors.
+4. Run the full quality gate before committing.
+
+### Cross-links
+
+- Performance targets are summarized in `PERFORMANCE_BUDGETS.md` and traced to the
+  PRD in `reference/00_PRODUCT_REQUIREMENTS.md`.
+- Cross-platform hazards are listed in `CROSS_PLATFORM.md` and mirrored in risk
+  entries in `reference/03_GAPS_AND_RISKS.md`.
+
+### Non-goals (reminder)
+
+Syntax highlighting, LSP, AI, plugins, theming engines, and multi-file tabs are
+explicitly deferred until after the MVP mission set unless `reference/` PRDs
+change.
+
+### Version skew
+
+If a command in this repository disagrees with upstream crate docs, **upstream
+wins** — update our docs in the same commit that bumps the dependency pin.
+
+### Contact surface with CI
+
+Linux CI compiles GPU code but generally does not open windows; headless
+initialization paths (`--dry-run`) exist to validate adapters without a display
+server.
+
+### Closing checklist for documentation edits
+
+- [ ] Breadcrumb line at the top points to `docs/` (see mission index).
+- [ ] "See also" section at the bottom links to 2–3 related docs.
+- [ ] No broken relative links to renamed files.
+

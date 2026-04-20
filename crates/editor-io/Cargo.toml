@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 editor-core = { path = "../editor-core" }
+memmap2     = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
 

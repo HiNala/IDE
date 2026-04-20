@@ -18,10 +18,17 @@ publish       = false
 workspace = true
 
 [dependencies]
+ropey   = { workspace = true }
 thiserror = { workspace = true }
 tracing   = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
+proptest  = { workspace = true }
+
+[[bench]]
+name = "rope_benches"
+harness = false
 
 [features]
 default = []

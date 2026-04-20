@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # Mission Index
 
 Missions run in strict order. Each assumes the previous is complete. Each
@@ -30,10 +32,12 @@ model, risks, and mission plan in `docs/`.
 
 **Scope.**
 
-- Create `docs/` with at least the 18 reference files listed in
-  `docs/README.md`.
-- Create root-level `README.md`, `ARCHITECTURE.md`, `TECH_STACK.md`,
-  `CHANGELOG.md`, `LICENSE-APACHE`, `LICENSE-MIT`, and `.gitignore`.
+- Create `docs/` with the reference files listed in `README.md`
+  (including `ARCHITECTURE.md` and `TECH_STACK.md` at the top of the tree).
+- Create root-level `README.md`, `CHANGELOG.md`, `LICENSE-APACHE`,
+  `LICENSE-MIT`, `CONTRIBUTING.md`, `DEVELOPMENT.md`, `FOLLOWUPS.md`,
+  and `.gitignore`.
+- Create `reference/` with the verbatim source PRDs.
 - Initialize the git repository on `main` and set the origin to
   `https://github.com/HiNala/IDE.git`.
 - Commit and push. Tag `m00-complete`.
@@ -234,14 +238,14 @@ when the overlay is off.
 - End-to-end stress tests: 100 MB / 500 MB / 1 GB files, typing bursts,
   rapid scroll, resize, suspend/resume.
 - Multi-hour soak test with bounded memory growth assertion.
-- Acceptance matrix filled in `docs/STATUS.md`.
+- Acceptance matrix filled in `STATUS.md`.
 - All six performance targets measured on at least one Windows machine
   and one Linux machine.
 - Regression benchmarks added to CI.
 
 **Out of Scope.** Any V2 feature.
 
-**Done When.** Every item in `docs/MVP_DEFINITION.md §8 Acceptance Criteria`
+**Done When.** Every item in `MVP_DEFINITION.md §8 Acceptance Criteria`
 is measured and marked PASS.
 
 ---
@@ -277,7 +281,7 @@ undo, and save — all without exceeding MVP performance budgets.
 - Status bar: file path, cursor position, modified flag, line endings.
 - "Reopen last file on launch" using `directories` for config storage.
 - Visual polish: cursor blink, selection color, focus styling.
-- V2 acceptance run in `docs/STATUS.md`.
+- V2 acceptance run in `STATUS.md`.
 
 **Done When.** Every V2 PRD acceptance criterion is measured and marked
 PASS.
@@ -299,7 +303,7 @@ PASS.
   and `appimagetool`.
 - Cross-compilation where possible (`cross` for Linux targets from Windows).
 - GitHub Actions `release.yml` that triggers on tag push.
-- Checksums and signing keys documented in `docs/CROSS_PLATFORM.md`.
+- Checksums and signing keys documented in `CROSS_PLATFORM.md`.
 
 **Done When.** A tagged release produces installable artifacts for all
 three OSes as GitHub release assets.

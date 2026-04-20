@@ -1,9 +1,9 @@
 # `editor-app`
 
-Binary shell. Owns the `winit` event loop, wires subsystems together, and
-initializes `tracing`.
+Binary shell. Owns the `winit` event loop (`ApplicationHandler`), wires
+subsystems together, and initializes `tracing`.
 
-Produces the `ide` binary (`[[bin]] name = "ide"`).
+Produces the `editor-app` binary (`cargo run --release --bin editor-app`).
+`--dry-run` skips the window and runs headless `wgpu` adapter/device init.
 
-See `ARCHITECTURE.md` (root) for the wiring. Scaffolded in M01 as a boot
-banner; M03 grows it into a real windowed app.
+See `docs/ARCHITECTURE.md` for wiring.

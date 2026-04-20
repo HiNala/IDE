@@ -1,17 +1,16 @@
-//! `editor-render` — GPU rendering for the IDE project.
+//! `editor-render` — GPU rendering (`wgpu`; `glyphon` in M04).
 //!
-//! This crate owns all `wgpu` state (Instance, Adapter, Device, Queue,
-//! Surface) and drives the `glyphon` text renderer. No other crate is
-//! permitted to hold a `wgpu::Device`.
+//! This crate owns all `wgpu` state. No other crate holds a `wgpu::Device`.
 //!
-//! Mission status:
-//! - **M01 (current):** crate scaffolded, builds, one smoke test.
-//! - **M03:** wgpu init, surface management, clear-color frame.
-//! - **M04:** glyphon integration, visible rope content rendered.
-//!
-//! See `docs/RENDERING.md` for the design.
+//! See `docs/RENDERING_PIPELINE.md`.
 
 #![forbid(unsafe_code)]
+
+mod error;
+mod gpu;
+
+pub use error::RenderError;
+pub use gpu::{dry_run_headless, GpuContext};
 
 /// Crate version string, sourced from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -31,5 +30,11 @@ mod tests {
         let b = banner();
         assert!(b.starts_with("editor-render v"), "banner = {b:?}");
         assert!(b.contains(VERSION), "banner = {b:?}");
+    }
+
+    #[test]
+    fn dry_run_headless_smoke() {
+        // GitHub Actions Linux runners may not expose a usable adapter; allow failure.
+        let _ = dry_run_headless();
     }
 }

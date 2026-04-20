@@ -18,7 +18,7 @@ publish       = false
 workspace = true
 
 [[bin]]
-name = "ide"
+name = "editor-app"
 path = "src/main.rs"
 
 [dependencies]
@@ -26,15 +26,19 @@ editor-core    = { path = "../editor-core" }
 editor-render  = { path = "../editor-render" }
 editor-input   = { path = "../editor-input" }
 editor-io      = { path = "../editor-io" }
+editor-ui      = { path = "../editor-ui" }
 
 anyhow             = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
+winit              = { workspace = true }
+wgpu               = { workspace = true }
+
+[build-dependencies]
+winres = "0.1"
 
 [dev-dependencies]
 
 [features]
 default = []
-# `dev-overlay` — compiles the per-frame metric panel (M07). Off in release
-# so release builds pay zero cost for measurement infrastructure.
 dev-overlay = []

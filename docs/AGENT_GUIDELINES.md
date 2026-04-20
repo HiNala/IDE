@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # Agent Guidelines — Standing Orders
 
 These are the **non-negotiable** standing orders for every agent (human or
@@ -16,7 +18,7 @@ If you hit a problem you cannot solve:
 
 1. Re-read the mission spec.
 2. Re-read the relevant files under `docs/`.
-3. Re-read the root `ARCHITECTURE.md` and `TECH_STACK.md`.
+3. Re-read `ARCHITECTURE.md` and `TECH_STACK.md`.
 4. Search the web (crate docs, changelogs, prior art such as Zed/Lapce/Helix).
 5. Keep going.
 
@@ -141,8 +143,8 @@ benchmarks to prove performance. Never ship on "feels fast enough."
 Before implementing anything new, check in this order:
 
 1. `docs/` in this repo.
-2. The referenced PRD documents (`docs/PRD.md`, `docs/V2_PRD.md`,
-   `docs/MVP_DEFINITION.md`, `docs/RISKS.md`).
+2. The referenced PRD documents (`PRD.md`, `V2_PRD.md`,
+   `MVP_DEFINITION.md`, `RISKS.md`).
 3. The open web: current crate docs on docs.rs, crate READMEs on GitHub,
    Zed / Lapce / Helix source, recent (2025–2026) blog posts.
 
@@ -187,12 +189,13 @@ Anything beyond that belongs in a future mission set, not these.
 ## 12. End-of-Mission Checklist
 
 1. Run the full quality gate (§5).
-2. Update `ARCHITECTURE.md` or `TECH_STACK.md` if the mission changed them.
+2. Update `ARCHITECTURE.md` or `TECH_STACK.md` if the mission
+   changed them.
 3. Append an entry under `## [Unreleased]` in `CHANGELOG.md`.
-4. Update `docs/STATUS.md` (what's done, what's next).
+4. Update `STATUS.md` (what's done, what's next).
 5. `git tag -a mXX-complete -m "Mission XX complete: <one-line summary>"`.
 6. `git push origin mXX-complete`.
-7. Add a short "Mission Complete" note at the bottom of `docs/STATUS.md`.
+7. Add a short "Mission Complete" note at the bottom of `STATUS.md`.
 
 ## 13. FOLLOWUPS.md
 

@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # MVP Definition
 
 This document is the **contract** for what counts as a finished MVP. It is
@@ -65,8 +67,8 @@ Everything in this list must work on Windows, Linux, and macOS.
 | NF-07 | Data safety | zero lost edits across crash injection tests |
 | NF-08 | Crash-free operation | zero panics in acceptance run |
 
-Measurement methodology is defined in `docs/PERFORMANCE_MODEL.md` and
-`docs/TESTING.md`.
+Measurement methodology is defined in `PERFORMANCE_BUDGETS.md` and
+`TESTING_STRATEGY.md`.
 
 ## 6. Definition of Completion
 
@@ -78,7 +80,7 @@ The MVP is complete when **all** of these hold:
 3. `cargo fmt`, `cargo clippy -D warnings`, `cargo test --all`,
    `cargo build --release`, and `cargo bench` all succeed on Windows,
    Linux, and macOS in CI.
-4. `docs/STATUS.md` is updated with measured performance numbers and
+4. `STATUS.md` is updated with measured performance numbers and
    marked MVP-complete.
 5. Tag `m08-complete` is pushed.
 
@@ -92,7 +94,7 @@ The MVP is complete when **all** of these hold:
 - **Soak test** for multi-hour memory stability.
 - **Crash-injection tests** for atomic save correctness.
 
-See `docs/TESTING.md`.
+See `TESTING_STRATEGY.md`.
 
 ## 8. Acceptance Criteria
 
@@ -109,7 +111,7 @@ Acceptance is measured, not felt.
 | AC-07 | No panics in acceptance run | CI-captured stderr |
 | AC-08 | CI green on all three OSes | GitHub Actions badge |
 
-All AC entries must be PASS in `docs/STATUS.md` for the MVP to ship.
+All AC entries must be PASS in `STATUS.md` for the MVP to ship.
 
 ## 9. Definition of "Working"
 

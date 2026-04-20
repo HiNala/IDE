@@ -23,7 +23,7 @@ Format per entry:
   again, whichever is sooner.
 
 - **[2026-04-20 · M01]** `cosmic-text` version is not yet pinned in
-  `TECH_STACK.md`; it must be chosen to be compatible with `glyphon`
+  `docs/TECH_STACK.md`; it must be chosen to be compatible with `glyphon`
   at M04 adoption time.
   *Why deferred:* Cannot pin accurately until we know which `glyphon`
   minor we consume and what its transitive `cosmic-text` bound is.

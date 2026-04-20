@@ -1,0 +1,26 @@
+[package]
+name          = "editor-ui"
+description   = "Minimal UI layer (gutter, status bar in V2) for the IDE project."
+version       = { workspace = true }
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+authors       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+homepage      = { workspace = true }
+readme        = "README.md"
+documentation = { workspace = true }
+keywords      = { workspace = true }
+categories    = { workspace = true }
+publish       = false
+
+[lints]
+workspace = true
+
+[dependencies]
+editor-core = { path = "../editor-core" }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+
+[features]
+default = []

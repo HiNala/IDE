@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # Observability
 
 The performance contract is measurable or it isn't real. This file
@@ -107,7 +109,7 @@ cargo bench -- --baseline main
 
 PRs fail if any benchmark regresses by > 5 %. The tolerance can be
 overridden per-benchmark in Criterion's config. See
-`docs/TESTING.md` §5 for the exact bench list.
+`TESTING_STRATEGY.md` §5 for the exact bench list.
 
 ## 8. Logs At Runtime
 

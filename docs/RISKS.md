@@ -1,3 +1,5 @@
+[← docs/](./) · [README](../README.md)
+
 # Risks, Gaps & Mitigations
 
 This file tracks known risks that could derail the project. Every mission
@@ -35,8 +37,8 @@ threatens the North Star.
 Every modern IDE grew from a fast editor that added features until it
 wasn't fast any more. Our defense:
 
-- MVP feature list is frozen in `docs/MVP_DEFINITION.md` §4.
-- V2 feature list is frozen in `docs/V2_PRD.md` §1.
+- MVP feature list is frozen in `MVP_DEFINITION.md` §4.
+- V2 feature list is frozen in `V2_PRD.md` §1.
 - Anything beyond V2 goes in `FOLLOWUPS.md` and is deferred to a
   future mission set.
 
