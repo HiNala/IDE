@@ -1,0 +1,117 @@
+###############################################################################
+# IDE workspace
+#
+# A performance-first, native code editor written in Rust.
+#
+# See:
+#   - ARCHITECTURE.md (root)  — crate boundaries and subsystem map
+#   - TECH_STACK.md   (root)  — dependency choices
+#   - docs/MISSIONS.md        — per-mission scope and definition of done
+#
+# This is a *virtual manifest* (no `[package]` section) because the workspace
+# root is not itself a crate. Every member is a real crate under `crates/`.
+###############################################################################
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/editor-core",
+    "crates/editor-render",
+    "crates/editor-input",
+    "crates/editor-io",
+    "crates/editor-app",
+]
+
+[workspace.package]
+version       = "0.1.0-m01"
+edition       = "2021"
+rust-version  = "1.94"
+authors       = ["HiNala <nalamaui30@gmail.com>"]
+license       = "MIT OR Apache-2.0"
+repository    = "https://github.com/HiNala/IDE"
+homepage      = "https://github.com/HiNala/IDE"
+readme        = "README.md"
+documentation = "https://github.com/HiNala/IDE/tree/main/docs"
+keywords      = ["editor", "ide", "wgpu", "performance"]
+categories    = ["gui", "text-editors"]
+
+###############################################################################
+# Shared lints
+#
+# Every workspace member opts in via `[lints] workspace = true`.
+# We treat clippy warnings as errors project-wide to keep the bar high.
+###############################################################################
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn          = "warn"
+unused_must_use                 = "warn"
+rust_2018_idioms                = { level = "warn", priority = -1 }
+missing_debug_implementations   = "warn"
+
+[workspace.lints.clippy]
+# Start with the "all" lint group, then raise selected pedantic/nursery items.
+all                             = { level = "warn", priority = -1 }
+# Forbid items that are almost always wrong on the real-time path.
+dbg_macro                       = "warn"
+todo                            = "warn"
+unimplemented                   = "warn"
+print_stderr                    = "warn"
+print_stdout                    = "warn"
+# Code-style hygiene.
+semicolon_if_nothing_returned   = "warn"
+needless_pass_by_value          = "warn"
+# Allow: these pedantic lints fire on perfectly fine code constantly.
+module_name_repetitions         = "allow"
+missing_errors_doc              = "allow"
+missing_panics_doc              = "allow"
+
+###############################################################################
+# Shared dependencies
+#
+# Only deps actively used in the current mission set are listed. Later missions
+# extend this table when they adopt a new crate; the adopting commit updates
+# `TECH_STACK.md` with the rationale.
+#
+# Versions follow Cargo's caret semantics (`"1.0"` == `">=1.0.0, <2.0.0"`).
+# Minor-pinned to keep `cargo update` within a known-compatible range.
+###############################################################################
+
+[workspace.dependencies]
+anyhow              = "1.0"
+thiserror           = "1.0"
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter", "fmt"] }
+
+###############################################################################
+# Release profile
+#
+# Tuned for small fast binaries. `lto = "thin"` is the best perf/compile-time
+# trade-off for this codebase; full LTO is only worth it for M11 release
+# builds, where we override in the release workflow.
+###############################################################################
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+panic         = "abort"
+debug         = false
+
+# `bench` inherits from `release` but keeps debug info for profilers.
+[profile.bench]
+inherits  = "release"
+debug     = true
+strip     = "none"
+
+# Dev profile: keep overflow checks and debug info.
+[profile.dev]
+opt-level        = 0
+debug            = true
+overflow-checks  = true
+
+# Speed up test runs without sacrificing assertion checks.
+[profile.test]
+opt-level        = 1
+debug            = true
+overflow-checks  = true

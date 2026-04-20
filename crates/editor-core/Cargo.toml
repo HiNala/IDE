@@ -1,0 +1,27 @@
+[package]
+name          = "editor-core"
+description   = "Text engine: rope buffer, cursor, selection, and undo/redo for the IDE project."
+version       = { workspace = true }
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+authors       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+homepage      = { workspace = true }
+readme        = "README.md"
+documentation = { workspace = true }
+keywords      = { workspace = true }
+categories    = { workspace = true }
+publish       = false
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+tracing   = { workspace = true }
+
+[dev-dependencies]
+
+[features]
+default = []

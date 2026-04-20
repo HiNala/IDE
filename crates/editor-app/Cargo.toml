@@ -1,0 +1,40 @@
+[package]
+name          = "editor-app"
+description   = "Binary shell for the IDE project. Owns the event loop and wires subsystems together."
+version       = { workspace = true }
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+authors       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+homepage      = { workspace = true }
+readme        = "README.md"
+documentation = { workspace = true }
+keywords      = { workspace = true }
+categories    = { workspace = true }
+publish       = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "ide"
+path = "src/main.rs"
+
+[dependencies]
+editor-core    = { path = "../editor-core" }
+editor-render  = { path = "../editor-render" }
+editor-input   = { path = "../editor-input" }
+editor-io      = { path = "../editor-io" }
+
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+
+[features]
+default = []
+# `dev-overlay` — compiles the per-frame metric panel (M07). Off in release
+# so release builds pay zero cost for measurement infrastructure.
+dev-overlay = []
