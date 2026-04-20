@@ -1,0 +1,8 @@
+# Pin the Rust toolchain so every contributor and CI job builds with the same
+# compiler. Upgrades happen deliberately, in their own commit.
+#
+# Reference: https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+profile = "default"
