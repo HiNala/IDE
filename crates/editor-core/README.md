@@ -1,4 +1,5 @@
 # `editor-core`
+<!-- touch -->
 
 Text engine: rope buffer, cursor, selection, undo/redo. Pure Rust, no GPU, no
 OS, no async. Real-time path.

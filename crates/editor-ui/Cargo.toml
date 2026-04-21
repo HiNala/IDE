@@ -18,7 +18,11 @@ publish       = false
 workspace = true
 
 [dependencies]
-editor-core = { path = "../editor-core" }
+editor-core       = { path = "../editor-core" }
+editor-settings   = { path = "../editor-settings" }
+editor-search     = { path = "../editor-search" }
+editor-workspace  = { path = "../editor-workspace" }
+nucleo            = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
 

@@ -1,0 +1,30 @@
+[package]
+name = "editor-skills"
+description = "Agent skills (SKILL.md) registry, progressive disclosure, system-info (M27)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+editor-terminal = { path = "../editor-terminal" }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+num_cpus = { workspace = true }
+memory-stats = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -6,18 +6,22 @@
 
 #![forbid(unsafe_code)]
 
+mod backend;
+mod diff_layout;
 mod editor_renderer;
 mod error;
 mod gpu;
 mod selection_layout;
 mod solid_quads;
 mod text_layer;
+mod timing;
 
 pub use editor_renderer::{EditorRenderer, FrameInput, FrameTimings};
 pub use error::RenderError;
 pub use gpu::{dry_run_headless, GpuContext};
 pub use text_layer::compute_gutter_width_px;
 pub use text_layer::TextLayer;
+pub use timing::FrameTimer;
 
 /// Crate version string, sourced from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

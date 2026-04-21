@@ -3,6 +3,13 @@
 use thiserror::Error;
 
 /// Recoverable errors from pure document operations.
+///
+/// ```
+/// use editor_core::CoreError;
+///
+/// let e = CoreError::InvalidLineIndex { line: 5, total_lines: 2 };
+/// assert!(e.to_string().contains('5'));
+/// ```
 #[derive(Debug, Error)]
 pub enum CoreError {
     /// Byte offset out of range for the current document buffer.

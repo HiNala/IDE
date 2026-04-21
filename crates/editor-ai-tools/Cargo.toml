@@ -1,0 +1,42 @@
+[package]
+name          = "editor-ai-tools"
+description   = "Agent tool-use: workspace-bound tools and transactional edits (M20)."
+version       = { workspace = true }
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+authors       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+homepage      = { workspace = true }
+readme        = "README.md"
+documentation = { workspace = true }
+keywords      = { workspace = true }
+categories    = { workspace = true }
+publish       = false
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait        = { workspace = true }
+chrono             = { workspace = true }
+editor-ai-provider = { path = "../editor-ai-provider" }
+editor-core        = { path = "../editor-core" }
+editor-metadata    = { path = "../editor-metadata" }
+editor-skills      = { path = "../editor-skills" }
+editor-diff        = { path = "../editor-diff" }
+editor-io          = { path = "../editor-io" }
+editor-search      = { path = "../editor-search" }
+editor-workspace   = { path = "../editor-workspace" }
+globset            = { workspace = true }
+ignore             = { workspace = true }
+schemars           = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+tokio              = { workspace = true }
+toml               = { workspace = true }
+tracing            = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

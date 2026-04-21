@@ -13,9 +13,9 @@ mod paths;
 mod save;
 mod types;
 
-pub use load::{load_file_sync, MMAP_THRESHOLD_BYTES};
-pub use save::save_file_sync;
-pub use types::{Encoding, LoadError, LoadedFile, SaveError};
+pub use load::{load_file_async, load_file_sync, MMAP_THRESHOLD_BYTES};
+pub use save::{save_file_async, save_file_sync};
+pub use types::{Encoding, LoadError, LoadProgress, LoadedFile, SaveError};
 
 /// Crate version string, sourced from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

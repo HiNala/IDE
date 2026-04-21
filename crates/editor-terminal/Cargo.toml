@@ -1,0 +1,28 @@
+﻿[package]
+name = "editor-terminal"
+description = "Integrated PTY + alacritty_terminal emulator for the IDE (M26)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+portable-pty = "0.9"
+alacritty_terminal = "0.25"
+parking_lot = { workspace = true }
+crossbeam-channel = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+winit = { workspace = true }
+
+[lints]
+workspace = true

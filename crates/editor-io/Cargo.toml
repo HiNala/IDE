@@ -18,6 +18,7 @@ publish       = false
 workspace = true
 
 [dependencies]
+crossbeam-channel = { workspace = true }
 editor-core = { path = "../editor-core" }
 encoding_rs = { workspace = true }
 memmap2     = { workspace = true }
@@ -25,6 +26,13 @@ ropey       = { workspace = true }
 tempfile    = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "file_io"
+harness = false
 
 [features]
 default = []

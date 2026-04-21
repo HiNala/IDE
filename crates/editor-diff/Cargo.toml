@@ -1,0 +1,26 @@
+[package]
+name          = "editor-diff"
+description   = "Line and character diffs (similar-based) for the IDE project."
+version       = { workspace = true }
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+authors       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+homepage      = { workspace = true }
+readme        = "README.md"
+documentation = { workspace = true }
+keywords      = { workspace = true }
+categories    = { workspace = true }
+publish       = false
+
+[lints]
+workspace = true
+
+[dependencies]
+editor-core = { path = "../editor-core" }
+ropey       = { workspace = true }
+similar     = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }

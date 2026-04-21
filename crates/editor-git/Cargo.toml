@@ -1,0 +1,23 @@
+[package]
+name = "editor-git"
+description = "Read-only git awareness for the IDE project (M18)."
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+readme = "README.md"
+documentation = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+editor-diff = { path = "../editor-diff" }
+gix = { version = "0.66", default-features = false, features = ["revision"] }
+thiserror = { workspace = true }

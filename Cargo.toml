@@ -5,12 +5,23 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/editor-core",
-    "crates/editor-input",
-    "crates/editor-render",
-    "crates/editor-io",
-    "crates/editor-ui",
+    "crates/editor-ai-provider",
+    "crates/editor-ai-tools",
     "crates/editor-app",
+    "crates/editor-core",
+    "crates/editor-diff",
+    "crates/editor-git",
+    "crates/editor-input",
+    "crates/editor-io",
+    "crates/editor-index",
+    "crates/editor-metadata",
+    "crates/editor-render",
+    "crates/editor-search",
+    "crates/editor-settings",
+    "crates/editor-skills",
+    "crates/editor-terminal",
+    "crates/editor-ui",
+    "crates/editor-workspace",
 ]
 
 [workspace.package]
@@ -62,16 +73,38 @@ arboard             = "3"
 parking_lot         = "0.12"
 criterion           = { version = "0.5", features = ["html_reports"] }
 proptest            = "1"
-insta               = "1"
 memory-stats        = "1.0"
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
+serde_yaml          = "0.9.34"
 directories         = "6"
 tempfile            = "3"
 crossbeam-channel   = "0.5"
 num_cpus            = "1.16"
 encoding_rs         = "0.8"
 rfd                 = "0.15"
+notify              = "8.2"
+ignore              = "0.4.25"
+nucleo              = "0.5"
+similar             = "2.7"
+globset             = "0.4.18"
+schemars            = { version = "1.2.1", features = ["derive"] }
+async-stream        = "0.3.6"
+async-trait         = "0.1.89"
+backoff             = { version = "0.4", features = ["tokio"] }
+bytes               = "1.11.1"
+futures             = "0.3.32"
+keyring             = "3.6.3"
+rand                = "0.8.6"
+reqwest             = { version = "0.12.28", default-features = false, features = ["json", "stream", "rustls-tls", "blocking"] }
+tokio               = { version = "1.52.1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
+toml                = "0.8.23"
+url                 = "2.5.8"
+wiremock            = "0.6.5"
+chrono              = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+sha2                = "0.10"
+regex               = "1"
+rusqlite            = { version = "0.32", features = ["bundled"] }
 
 [profile.release]
 opt-level     = 3
@@ -87,7 +120,6 @@ inherits = "release"
 debug    = true
 strip    = "none"
 
-# Alias for M11 / Tracy profiling sessions (same intent as `release-dev`).
 [profile.release-with-debug]
 inherits = "release"
 debug    = true

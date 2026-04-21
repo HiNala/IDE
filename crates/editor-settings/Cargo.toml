@@ -1,0 +1,29 @@
+[package]
+name          = "editor-settings"
+description   = "User settings schema, TOML persistence, import/export (no secrets on disk)."
+version       = { workspace = true }
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+authors       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+homepage      = { workspace = true }
+documentation = { workspace = true }
+keywords      = { workspace = true }
+categories    = { workspace = true }
+publish       = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+toml        = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+directories = { workspace = true }
+editor-core = { path = "../editor-core" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

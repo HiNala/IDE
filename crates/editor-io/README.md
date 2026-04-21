@@ -4,3 +4,5 @@ Async file I/O, memory-mapped large reads, and atomic writes. Only crate
 allowed to touch the filesystem. Background path.
 
 See `docs/FILE_IO.md`. Scaffolded in M01; implementation lands in M06.
+
+Benchmark: `cargo bench -p editor-io --bench file_io` (save baseline `m06-mvp` per `docs/PERFORMANCE_BUDGETS.md`).

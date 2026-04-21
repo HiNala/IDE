@@ -1,0 +1,31 @@
+[package]
+name          = "editor-workspace"
+description   = "Workspace root, gitignore-aware enumeration, file watching, and multi-buffer state (M13+)."
+version       = { workspace = true }
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+authors       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+homepage      = { workspace = true }
+readme        = "README.md"
+documentation = { workspace = true }
+keywords      = { workspace = true }
+categories    = { workspace = true }
+publish       = false
+
+[lints]
+workspace = true
+
+[dependencies]
+editor-core         = { path = "../editor-core" }
+editor-io           = { path = "../editor-io" }
+thiserror           = { workspace = true }
+tracing             = { workspace = true }
+crossbeam-channel   = { workspace = true }
+notify              = { workspace = true }
+notify-debouncer-full = { version = "0.7", features = ["crossbeam-channel"] }
+ignore              = { workspace = true }
+
+[dev-dependencies]
+tempfile            = { workspace = true }

@@ -1,0 +1,30 @@
+[package]
+name = "editor-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Find/replace and project-wide search for the IDE (M16)."
+
+[dependencies]
+crossbeam-channel.workspace = true
+editor-core.path = "../editor-core"
+editor-workspace.path = "../editor-workspace"
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+ignore.workspace = true
+regex = "1"
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+editor-workspace.path = "../editor-workspace"
+regex = "1"
+tempfile.workspace = true
+
+[[bench]]
+name = "search_benches"

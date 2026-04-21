@@ -19,8 +19,11 @@
 //!     })
 //!     .unwrap();
 //! undo.push(edit);
-//! assert!(buf.slice_to_string(BytePos(0)..BytePos(1)).unwrap() == "x");
+//! assert_eq!(buf.to_text(), "xhi\n");
 //! undo.undo(&mut buf).unwrap();
+//! assert_eq!(buf.to_text(), "hi\n");
+//! undo.redo(&mut buf).unwrap();
+//! assert_eq!(buf.to_text(), "xhi\n");
 //! ```
 
 #![forbid(unsafe_code)]

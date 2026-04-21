@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use editor_core::TextBuffer;
+use editor_core::{LineEnding, TextBuffer};
 
 /// On-disk text encoding we preserve across load/save.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,10 +20,22 @@ pub enum Encoding {
 pub struct LoadedFile {
     pub buffer: TextBuffer,
     pub path: PathBuf,
+    /// Original line-ending convention (same as [`TextBuffer::original_line_ending`]).
+    pub line_ending: LineEnding,
     pub encoding: Encoding,
     pub byte_size: u64,
     pub mtime: SystemTime,
     pub was_memory_mapped: bool,
+}
+
+/// Background load notifications (see [`crate::load_file_async`]).
+#[derive(Debug)]
+pub enum LoadProgress {
+    Started { total_bytes: u64 },
+    Progress { bytes_read: u64 },
+    Done(LoadedFile),
+    Error(LoadError),
+    Cancelled,
 }
 
 /// Load failure.

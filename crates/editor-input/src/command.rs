@@ -31,7 +31,9 @@ pub enum EditorCommand {
     SelectAll,
     /// Exit the application (debug / minimal quit path).
     Quit,
-    /// Toggle the developer HUD / metrics overlay (F11).
+    /// Toggle exclusive fullscreen (**F11**); **Primary+F11** toggles the developer HUD / metrics overlay.
+    ToggleFullscreen,
+    /// Toggle the developer HUD / metrics overlay (**Primary+F11**).
     ToggleDevHud,
     /// Apply a cursor motion (keyboard navigation).
     ApplyCursorMotion {
@@ -64,4 +66,26 @@ pub enum EditorCommand {
     ScrollContent {
         delta_y_px: f32,
     },
+    /// Toggle integrated terminal pane (M26: **Ctrl+`**).
+    ToggleTerminalPane,
+    /// Spawn another integrated terminal session (M26: **Ctrl+Shift+`**).
+    NewIntegratedTerminal,
+    /// Open settings (M28: **Ctrl+,** — VS Code convention).
+    OpenSettings,
+    /// Next open buffer in MRU order (**Ctrl+Tab**).
+    NextBuffer,
+    /// Previous open buffer (**Ctrl+Shift+Tab**).
+    PrevBuffer,
+    /// Close active buffer (**Ctrl+W**); host may refuse if dirty.
+    CloseBuffer,
+    /// New untitled buffer (**Ctrl+N**).
+    NewBuffer,
+    /// Toggle project sidebar (**Ctrl+B**).
+    ToggleSidebar,
+    /// Toggle quick-open palette (**Ctrl+P**).
+    ToggleQuickOpen,
+    /// Focus sidebar for keyboard navigation (**Ctrl+Shift+E**).
+    FocusSidebar,
+    /// Dismiss modal overlay / cancel (Escape); app decides vs quit.
+    Cancel,
 }

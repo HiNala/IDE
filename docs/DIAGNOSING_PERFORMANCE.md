@@ -23,6 +23,17 @@ Cookbook for when the editor feels slow or stutters. Expanded in **M07** (observ
 
 If `wgpu` reports device loss, the app should attempt one recovery (M08 polish). If recovery fails, exit code **2** is reserved (see `DEVELOPMENT.md`). Until implemented, check logs for `ERROR` from `editor_render`.
 
+## Resize (M12)
+
+Typical costs during window resize:
+
+1. **Swapchain reconfiguration** — `GpuContext::resize` updates `SurfaceConfiguration` and calls `surface.configure`. The swapchain is recreated by the driver; keep document shaping out of this path where possible.
+2. **Layout cache** — Document lines use a fixed large layout width (`editor-render` `TextLayer`) so horizontal resize does **not** invalidate cosmic-text shaping for visible rows; only edits, scale factor, or vertical range changes do.
+3. **Windows modal resize loop** — While the user drags an edge, the OS may not dispatch a normal idle loop; the app paints from `WindowEvent::Resized` / `ScaleFactorChanged` synchronously so content keeps up.
+4. **DPI** — `ScaleFactorChanged` triggers glyph re-rasterization at the new density; expect a slightly heavier prepare phase for one frame.
+
+**Telemetry:** run `editor-app --resize-telemetry` and set `RUST_LOG=editor_app::resize_telemetry=info` to log each resize frame duration (see `scripts/resize-stress.ps1`).
+
 ---
 
 *See also `PERFORMANCE_BUDGETS.md`, `TESTING_STRATEGY.md`, `MVP_ACCEPTANCE.md`.*

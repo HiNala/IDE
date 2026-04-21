@@ -23,8 +23,17 @@ use editor_core::{
     BytePos, Cursor, CursorMotion, EditKind, ScrollOffset, Selection, TextBuffer, UndoStack,
     WorkerPool,
 };
+use editor_git::GitRepo;
 use editor_input::{map_key_event, scroll_delta_y_pixels, EditorCommand, MouseChordState};
 use editor_io::{load_file_sync, save_file_sync, Encoding, LoadError, LoadedFile, SaveError};
+use editor_settings::{LegacySessionMerge, LineEndingPreference, SettingsStore};
+use editor_terminal::{detect_shell, Terminal, TerminalConfig, TerminalId};
+use editor_ui::{
+    paint_tab_strip, FrameChrome, QuickOpenPalette, Sidebar, TabHit, TAB_STRIP_HEIGHT,
+};
+use editor_workspace::entry::FileEntry;
+use editor_workspace::{BufferId, BufferManager, FileSystemEvent, Workspace};
+use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use tracing::{debug, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -37,7 +46,7 @@ use winit::event::MouseButton;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::ModifiersState;
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 
 /// Crate / app version from `Cargo.toml`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -49,11 +58,92 @@ const CLEAR: wgpu::Color = wgpu::Color { r: 0.118, g: 0.118, b: 0.118, a: 1.0 };
 enum AppEvent {
     /// Toggle cursor blink phase (~2 Hz).
     BlinkTick,
+    /// Drain PTY bytes into the emulator between frames.
+    TerminalPump,
 }
 
 /// Files at or above this size are read on a background thread so the window can show immediately
 /// (M06: avoid blocking the UI on huge reads).
 const ASYNC_LOAD_MIN_BYTES: u64 = 4 * 1024 * 1024;
+
+fn line_ending_label(le: LineEndingPreference) -> &'static str {
+    match le {
+        LineEndingPreference::Auto => "auto",
+        LineEndingPreference::Lf => "lf",
+        LineEndingPreference::Crlf => "crlf",
+    }
+}
+
+/// Lines for the full-window settings overlay (M28); read-only until an in-app editor ships.
+fn format_settings_overlay(store: &SettingsStore) -> Vec<String> {
+    let path = editor_settings::paths::settings_file_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(no config path)".into());
+    let s = store.settings();
+    let active = match (&s.ai.active_provider, &s.ai.active_model) {
+        (Some(p), Some(m)) => format!("{p} / {m}"),
+        (Some(p), None) => format!("{p} (default model)"),
+        (None, _) => "—".into(),
+    };
+    let mut lines = vec![
+        "Settings".to_string(),
+        String::new(),
+        format!("File: {path}"),
+        format!("Schema version: {}", s.version),
+        String::new(),
+        "AI".to_string(),
+        format!("  Active: {active}"),
+        format!("  Summarizer: {}", s.ai.enabled_summarizer),
+        format!("  Vector index: {}", s.ai.enabled_vector_index),
+        format!("  max_tokens_default: {}", s.ai.max_tokens_default),
+        format!(
+            "  temperature_default: {}",
+            s.ai.temperature_default.map(|t| t.to_string()).unwrap_or_else(|| "—".into())
+        ),
+        String::new(),
+        "Providers".to_string(),
+    ];
+    let mut keys: Vec<_> = s.ai.providers.keys().cloned().collect();
+    keys.sort();
+    for k in keys {
+        let c = &s.ai.providers[&k];
+        let bu = c.base_url.as_deref().unwrap_or("—");
+        lines.push(format!("  {k}: enabled={} model={} base_url={bu}", c.enabled, c.default_model));
+    }
+    lines.push(String::new());
+    lines.extend([
+        "Editor".to_string(),
+        format!("  font_size: {}", s.editor.font_size),
+        format!("  line_ending: {}", line_ending_label(s.editor.line_ending)),
+        format!(
+            "  trim_trailing_whitespace_on_save: {}",
+            s.editor.trim_trailing_whitespace_on_save
+        ),
+        format!("  ensure_newline_at_eof: {}", s.editor.ensure_newline_at_eof),
+        format!("  word_wrap: {}", s.editor.word_wrap),
+        format!("  undo_coalesce_ms: {}", s.editor.undo_coalesce_ms),
+        String::new(),
+        "Terminal".to_string(),
+        format!(
+            "  shell_override: {}",
+            s.terminal
+                .shell_override
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "—".into())
+        ),
+        format!("  font_size: {}", s.terminal.font_size),
+        format!("  scrollback_lines: {}", s.terminal.scrollback_lines),
+        format!("  default_height_pct: {}", s.terminal.default_height_pct),
+        String::new(),
+        "Skills".to_string(),
+        format!("  disabled count: {}", s.skills.disabled.len()),
+        format!("  extra_skill_dirs: {}", s.extra_skill_dirs.len()),
+        String::new(),
+        "Ctrl+, — toggle  ·  Esc — close".to_string(),
+    ]);
+    lines
+}
 
 enum InitialLoadPlan {
     /// Bundled sample text (no path).
@@ -130,6 +220,25 @@ fn main() -> ExitCode {
 /// Reserved exit codes: `0` OK, `2` unrecoverable GPU (future), `64` bad CLI (BSD convention).
 fn run() -> Result<(), ExitCode> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    if args.first().is_some_and(|a| a == "index") {
+        let rest: Vec<String> = args.into_iter().skip(1).collect();
+        let root = match std::env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("editor-app: {e}");
+                return Err(ExitCode::FAILURE);
+            }
+        };
+        return match editor_index::cli::run_cli(&root, &rest) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("{e}");
+                Err(ExitCode::FAILURE)
+            }
+        };
+    }
+
     for a in &args {
         if a == "--help" || a == "-h" {
             print_help();
@@ -153,12 +262,28 @@ fn run() -> Result<(), ExitCode> {
 
     let persisted = config::PersistedState::load();
     let open_arg = args.iter().find(|a| !a.starts_with('-')).cloned();
-    let plan = resolve_initial_plan(open_arg, &persisted);
-    if let Err(e) = run_windowed(plan, persisted, start_dev_hud) {
+    let (file_arg, workspace_hint) = split_file_vs_folder_arg(open_arg);
+    let plan = resolve_initial_plan(file_arg, &persisted);
+    if let Err(e) = run_windowed(plan, persisted, start_dev_hud, workspace_hint) {
         eprintln!("{e:#}");
         return Err(ExitCode::FAILURE);
     }
     Ok(())
+}
+
+/// Splits the first positional CLI arg into (file-to-open, workspace-folder).
+/// If the path is a directory → treat as workspace. If it's a regular file → open as file;
+/// the parent folder is also suggested as the workspace root so the sidebar is useful.
+fn split_file_vs_folder_arg(arg: Option<String>) -> (Option<String>, Option<PathBuf>) {
+    let Some(s) = arg else {
+        return (None, None);
+    };
+    let p = PathBuf::from(&s);
+    if p.is_dir() {
+        return (None, Some(p));
+    }
+    let folder = p.parent().filter(|d| d.is_dir()).map(Path::to_path_buf);
+    (Some(s), folder)
 }
 
 fn print_help() {
@@ -167,13 +292,18 @@ fn print_help() {
 editor-app — IDE binary (MVP in progress)
 
 Usage:
-  editor-app [path/to/file.txt] [--dry-run] [--dev-hud] [--help]
+  editor-app [path/to/file.txt] [--dry-run] [--perf-smoke] [--dev-hud] [--help]
+  editor-app index [--rebuild | --status]
 
 Arguments:
   path        Optional UTF-8 text file to open (falls back to bundled sample on error).
 
+Commands:
+  index       Local vector index over sidecars + code (see docs/VECTOR_INDEX.md). Uses cwd as workspace root.
+
 Options:
   --dry-run   Headless GPU adapter/device init (no window).
+  --perf-smoke  Scripted hidden-window frames + JSON line on stdout (PERF_SMOKE_* env vars).
   --dev-hud   Start with the F11 metrics overlay visible (same as pressing F11).
   --log-json  Emit tracing logs as JSON lines (for tooling); still obeys RUST_LOG.
   -h, --help  Show this help.
@@ -192,6 +322,7 @@ fn run_windowed(
     plan: InitialLoadPlan,
     persisted: config::PersistedState,
     start_dev_hud: bool,
+    workspace_hint: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     info!(version = VERSION, "ide: starting windowed mode");
     info!("linked: {}", editor_core::banner());
@@ -208,9 +339,23 @@ fn run_windowed(
         thread::sleep(Duration::from_millis(530));
         let _ = proxy_blink.send_event(AppEvent::BlinkTick);
     });
+    let proxy_term = proxy.clone();
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(50));
+        let _ = proxy_term.send_event(AppEvent::TerminalPump);
+    });
 
     let sample = include_str!("../assets/sample.txt");
     let worker_pool = WorkerPool::new(None);
+    let legacy = LegacySessionMerge::from_persisted(
+        persisted.undo_coalesce_ms,
+        &persisted.skills_disabled,
+        &persisted.extra_skill_dirs,
+    );
+    let settings_store = SettingsStore::load_or_create(Some(&legacy));
+
+    let app_sidebar_width = persisted.sidebar_width;
+    let app_sidebar_visible = persisted.sidebar_visible.unwrap_or(false);
 
     let (buffer, open_path, disk_encoding, file_mtime, document_loading, load_rx, cursor_byte0) =
         match plan {
@@ -265,8 +410,38 @@ fn run_windowed(
         mouse_chord: MouseChordState::default(),
         last_pointer: PhysicalPosition::new(0.0, 0.0),
         drag_anchor: None,
+        settings_store,
+        settings_overlay_lines: None,
+        terminal_pane_visible: false,
+        terminal_pane_fraction: 0.35,
+        active_terminal_slot: 0,
+        terminals: [None, None],
+        terminal_next_id: 1,
+        terminal_cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        terminal_focus: false,
+        terminal_split_dragging: false,
+        workspace: None,
+        workspace_entries: Vec::new(),
+        buffers: BufferManager::new(),
+        active_buffer_id: None,
+        sidebar: {
+            let mut sb = Sidebar::new();
+            if let Some(w) = app_sidebar_width {
+                sb.width = w.max(120.0);
+            }
+            sb.visible = app_sidebar_visible;
+            sb
+        },
+        quick_open: QuickOpenPalette::new(),
+        tab_hits: Vec::new(),
+        git_branch: None,
+        git_last_refresh: Instant::now() - Duration::from_secs(10),
     };
     app.clamp_cursor_to_buffer();
+    app.seed_initial_buffer_into_manager();
+    if let Some(ws_root) = workspace_hint {
+        app.open_workspace_folder(&ws_root);
+    }
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -307,6 +482,43 @@ struct App {
     last_pointer: PhysicalPosition<f64>,
     /// Byte where a simple-click drag started (anchor for drag selection).
     drag_anchor: Option<BytePos>,
+    settings_store: SettingsStore,
+    /// Full-window settings overlay content (M28); `None` when hidden.
+    settings_overlay_lines: Option<Vec<String>>,
+    /// Whether the bottom integrated terminal strip is shown (**Ctrl+`**).
+    terminal_pane_visible: bool,
+    /// Share of window height (below status bar) used by the terminal when visible.
+    terminal_pane_fraction: f32,
+    active_terminal_slot: usize,
+    terminals: [Option<Terminal>; 2],
+    terminal_next_id: u64,
+    /// Working directory for new PTY sessions.
+    terminal_cwd: PathBuf,
+    /// When true, typed keys go to the active PTY instead of the text buffer.
+    terminal_focus: bool,
+    /// User is dragging the editor/terminal split (resize handle).
+    terminal_split_dragging: bool,
+    // --- M13 workspace + multi-buffer ------------------------------------------------
+    /// Project root when the user opened a folder (`Ctrl+K Ctrl+O` / dir CLI arg). `None` when
+    /// only a single file is open.
+    workspace: Option<Workspace>,
+    /// Cached file entries from the most recent `walk_files`; used by the sidebar tree and
+    /// the quick-open palette.
+    workspace_entries: Vec<FileEntry>,
+    /// Inactive buffers live here; the currently-edited buffer is mirrored into the top-level
+    /// `buffer`/`cursor`/`selection`/... fields and is also tracked by `active_buffer_id`.
+    buffers: BufferManager,
+    /// Handle for the buffer whose state is currently mirrored into the App's active fields.
+    /// `None` when the app is showing the bundled sample without a real buffer id yet.
+    active_buffer_id: Option<BufferId>,
+    // --- M14 chrome surfaces ---------------------------------------------------------
+    sidebar: Sidebar,
+    quick_open: QuickOpenPalette,
+    /// Tab hit boxes from the last frame's `paint_tab_strip` — used by mouse routing.
+    tab_hits: Vec<TabHit>,
+    // --- M18 light-touch git branch in the status bar --------------------------------
+    git_branch: Option<String>,
+    git_last_refresh: Instant,
 }
 
 impl App {
@@ -315,12 +527,159 @@ impl App {
         24.0 * self.scale_factor
     }
 
-    /// Viewport height available for the text canvas (window minus status bar).
+    /// Height reserved for the integrated terminal pane (physical px). `0` when hidden.
+    fn terminal_pane_height_px(&self) -> f32 {
+        if !self.terminal_pane_visible {
+            return 0.0;
+        }
+        let Some(w) = self.window.as_ref() else {
+            return 0.0;
+        };
+        let h = w.inner_size().height as f32;
+        let status = self.status_bar_height_px();
+        ((h - status) * self.terminal_pane_fraction).max(0.0)
+    }
+
+    /// Viewport height for the editor text canvas (window minus status bar and terminal pane).
     fn content_height_for_layout(&self) -> f32 {
         let Some(w) = self.window.as_ref() else {
             return 1.0;
         };
-        (w.inner_size().height as f32 - self.status_bar_height_px()).max(1.0)
+        (w.inner_size().height as f32
+            - self.status_bar_height_px()
+            - self.terminal_pane_height_px())
+        .max(1.0)
+    }
+
+    fn active_terminal_slot_idx(&self) -> usize {
+        let i = self.active_terminal_slot.min(1);
+        if self.terminals[i].is_some() {
+            i
+        } else if self.terminals[0].is_some() {
+            0
+        } else {
+            i
+        }
+    }
+
+    fn terminal_cell_dimensions(&self) -> Option<(u16, u16, u16, u16)> {
+        let renderer = self.renderer.as_ref()?;
+        let w = self.window.as_ref()?;
+        let line_h = renderer.line_height_px();
+        let (_, char_w) = editor_render::compute_gutter_width_px(9_999, self.scale_factor);
+        let (gutter_w, _) = editor_render::compute_gutter_width_px(9_999, self.scale_factor);
+        let body_left = 8.0 + gutter_w;
+        let pw = w.inner_size().width as f32;
+        let term_h = self.terminal_pane_height_px();
+        let cols = ((pw - body_left) / char_w.max(1e-6)).floor().max(1.0) as u16;
+        let rows = (term_h / line_h).floor().max(1.0) as u16;
+        let cw = char_w.round().max(1.0) as u16;
+        let ch = line_h.round().max(1.0) as u16;
+        Some((cols, rows, cw, ch))
+    }
+
+    fn sync_terminal_size(&mut self) {
+        if !self.terminal_pane_visible {
+            return;
+        }
+        let Some((cols, rows, cw, ch)) = self.terminal_cell_dimensions() else {
+            return;
+        };
+        for slot in 0..2 {
+            if let Some(ref mut t) = self.terminals[slot] {
+                let _ = t.resize(cols, rows, cw, ch);
+            }
+        }
+    }
+
+    fn spawn_terminal(&mut self, slot: usize) -> Result<(), editor_terminal::TerminalError> {
+        let (cols, rows, cw, ch) = match self.terminal_cell_dimensions() {
+            Some(x) => x,
+            None => {
+                return Err(editor_terminal::TerminalError::Pty(
+                    "terminal layout unavailable".into(),
+                ));
+            }
+        };
+        let id = TerminalId(self.terminal_next_id);
+        self.terminal_next_id += 1;
+        let shell = detect_shell(None)?;
+        let term = Terminal::spawn(TerminalConfig {
+            id,
+            shell,
+            cwd: self.terminal_cwd.clone(),
+            cols,
+            rows,
+            cell_width_px: cw,
+            cell_height_px: ch,
+        })?;
+        self.terminals[slot] = Some(term);
+        Ok(())
+    }
+
+    fn ensure_terminal_spawned(&mut self) {
+        if self.terminals[0].is_none() {
+            if let Err(e) = self.spawn_terminal(0) {
+                warn!(error = %e, "spawn integrated terminal");
+            }
+            self.active_terminal_slot = 0;
+        }
+    }
+
+    /// Bottom Y of the editor text region in physical pixels (above terminal + status bar).
+    fn editor_content_bottom_px(&self) -> Option<f64> {
+        let w = self.window.as_ref()?;
+        let h = w.inner_size().height as f64;
+        let status = self.status_bar_height_px() as f64;
+        let term = self.terminal_pane_height_px() as f64;
+        Some(h - status - term)
+    }
+
+    fn pointer_in_terminal_pane(&self, y_px: f64) -> bool {
+        if !self.terminal_pane_visible || self.terminal_pane_height_px() <= 0.5 {
+            return false;
+        }
+        let Some(w) = self.window.as_ref() else {
+            return false;
+        };
+        let h = w.inner_size().height as f64;
+        let status = self.status_bar_height_px() as f64;
+        let term = self.terminal_pane_height_px() as f64;
+        y_px >= h - status - term && y_px < h - status
+    }
+
+    /// Y coordinate (physical px, top-left origin) of the editor/terminal divider.
+    fn terminal_divider_top_px(&self) -> Option<f64> {
+        if !self.terminal_pane_visible {
+            return None;
+        }
+        let w = self.window.as_ref()?;
+        let h = w.inner_size().height as f64;
+        let status = self.status_bar_height_px() as f64;
+        let term = self.terminal_pane_height_px() as f64;
+        Some(h - status - term)
+    }
+
+    fn pointer_on_terminal_divider(&self, y_px: f64) -> bool {
+        let Some(div) = self.terminal_divider_top_px() else {
+            return false;
+        };
+        let slop = (4.0_f64 * f64::from(self.scale_factor)).max(2.0);
+        (y_px - div).abs() <= slop
+    }
+
+    fn update_terminal_split_from_pointer_y(&mut self, y_px: f64) {
+        let Some(w) = self.window.as_ref() else {
+            return;
+        };
+        let h = w.inner_size().height as f64;
+        let status = self.status_bar_height_px() as f64;
+        let inner = h - status;
+        if inner <= 96.0 {
+            return;
+        }
+        let term_h = (h - status - y_px).clamp(48.0, inner - 48.0);
+        self.terminal_pane_fraction = (term_h / inner) as f32;
     }
 
     fn visible_line_count(&self) -> usize {
@@ -392,6 +751,246 @@ impl App {
         }
         self.cursor = Cursor::new(BytePos(p));
         self.selection = Selection::empty(self.cursor.pos());
+    }
+
+    /// Register the initial (post-CLI) buffer with the `BufferManager` so tab strip
+    /// and buffer cycling can see it. Called once after the App struct is built.
+    fn seed_initial_buffer_into_manager(&mut self) {
+        if self.active_buffer_id.is_some() {
+            return;
+        }
+        // Clone the initial buffer contents into a BufferState stored in the manager.
+        // The live App fields remain the authoritative mirror for the active slot.
+        let id = self.buffers.create_empty();
+        self.sync_active_to_manager_with_id(id);
+        self.active_buffer_id = Some(id);
+    }
+
+    /// Copy the current App editor state into the specified buffer slot in the manager.
+    /// Used before switching away from the active buffer and whenever we need the
+    /// manager-side state to be in sync (tab strip rendering, external polling).
+    fn sync_active_to_manager_with_id(&mut self, id: BufferId) {
+        let Some(st) = self.buffers.get_mut(id) else {
+            return;
+        };
+        st.buffer = self.buffer.clone();
+        st.cursor = self.cursor;
+        st.selection = self.selection;
+        // UndoStack has no Clone; recreate empty — multi-session undo across switches
+        // is out of scope for this wiring pass (noted in FOLLOWUPS).
+        st.undo = UndoStack::default();
+        st.scroll = self.scroll;
+        st.path = self.open_path.clone();
+        st.disk_encoding = self.disk_encoding;
+        st.dirty = self.dirty;
+        st.external_modified = self.external_modified;
+        st.file_mtime = self.file_mtime;
+    }
+
+    /// Snapshot-style variant for reads (doesn't touch undo): the sync writes the latest
+    /// live fields into the backing `BufferState` without creating a fresh UndoStack.
+    fn sync_active_metadata_only(&mut self) {
+        let Some(id) = self.active_buffer_id else {
+            return;
+        };
+        let Some(st) = self.buffers.get_mut(id) else {
+            return;
+        };
+        st.buffer = self.buffer.clone();
+        st.cursor = self.cursor;
+        st.selection = self.selection;
+        st.scroll = self.scroll;
+        st.path = self.open_path.clone();
+        st.disk_encoding = self.disk_encoding;
+        st.dirty = self.dirty;
+        st.external_modified = self.external_modified;
+        st.file_mtime = self.file_mtime;
+    }
+
+    /// Load the fields of `BufferState` into the App's active slot. Caller must have
+    /// already saved the previous active state (see [`Self::sync_active_to_manager_with_id`]).
+    fn load_state_from_buffer(&mut self, id: BufferId) {
+        let Some(st) = self.buffers.get(id) else {
+            return;
+        };
+        self.buffer = st.buffer.clone();
+        self.cursor = st.cursor;
+        self.selection = st.selection;
+        self.undo = UndoStack::default();
+        self.scroll = st.scroll;
+        self.open_path = st.path.clone();
+        self.disk_encoding = st.disk_encoding;
+        self.dirty = st.dirty;
+        self.external_modified = st.external_modified;
+        self.file_mtime = st.file_mtime;
+        self.active_buffer_id = Some(id);
+        self.drag_anchor = None;
+        self.clamp_cursor_to_buffer();
+    }
+
+    /// Switch to the given buffer, saving the current active state first.
+    fn switch_to_buffer(&mut self, id: BufferId) {
+        if self.active_buffer_id == Some(id) {
+            return;
+        }
+        if let Some(cur) = self.active_buffer_id {
+            self.sync_active_to_manager_with_id(cur);
+        }
+        let _ = self.buffers.switch_to(id);
+        self.load_state_from_buffer(id);
+        self.reveal_active_in_sidebar();
+        self.sync_window_title();
+    }
+
+    fn workspace_root(&self) -> Option<&Path> {
+        self.workspace.as_ref().map(|w| w.root())
+    }
+
+    /// If the active file lives under the workspace root, expand ancestors so the sidebar
+    /// shows it (keyboard focus unchanged). No-op outside a workspace.
+    fn reveal_active_in_sidebar(&mut self) {
+        let (Some(abs), Some(root)) = (self.open_path.as_ref(), self.workspace_root()) else {
+            return;
+        };
+        let Ok(rel) = abs.strip_prefix(root) else {
+            return;
+        };
+        self.sidebar.reveal_path(rel);
+    }
+
+    /// Open (or switch to) `path` as a new tab; mirrors state into the App's active slot.
+    fn open_path_as_buffer(&mut self, path: &Path) {
+        if let Some(cur) = self.active_buffer_id {
+            self.sync_active_to_manager_with_id(cur);
+        }
+        match self.buffers.open_file_coalesced(path, self.persisted.undo_coalesce_ms) {
+            Ok(id) => {
+                self.load_state_from_buffer(id);
+                self.reveal_active_in_sidebar();
+                self.sync_window_title();
+            }
+            Err(e) => warn!(path = %path.display(), error = %e, "open_path_as_buffer: load failed"),
+        }
+    }
+
+    fn open_workspace_folder(&mut self, root: &Path) {
+        match Workspace::open(root) {
+            Ok(ws) => {
+                info!(root = %ws.root().display(), "workspace opened");
+                self.workspace = Some(ws);
+                self.rebuild_workspace_entries();
+                self.refresh_git_branch(true);
+                // Auto-show the sidebar so folder opens are immediately useful.
+                if !self.sidebar.visible {
+                    self.sidebar.visible = true;
+                }
+                self.reveal_active_in_sidebar();
+            }
+            Err(e) => warn!(error = %e, root = %root.display(), "workspace open failed"),
+        }
+    }
+
+    fn rebuild_workspace_entries(&mut self) {
+        let Some(ws) = self.workspace.as_ref() else {
+            self.workspace_entries.clear();
+            self.sidebar.rebuild_flat(&self.workspace_entries);
+            self.quick_open_refresh();
+            return;
+        };
+        match ws.walk_files() {
+            Ok(entries) => {
+                self.workspace_entries = entries;
+                self.sidebar.rebuild_flat(&self.workspace_entries);
+                self.quick_open_refresh();
+            }
+            Err(e) => warn!(error = %e, "workspace walk failed"),
+        }
+    }
+
+    fn quick_open_refresh(&mut self) {
+        let Some(ws) = self.workspace.as_ref() else {
+            return;
+        };
+        self.quick_open.set_workspace_files(ws, &self.workspace_entries);
+    }
+
+    fn refresh_git_branch(&mut self, force: bool) {
+        let due = force || self.git_last_refresh.elapsed() >= Duration::from_secs(5);
+        if !due {
+            return;
+        }
+        self.git_last_refresh = Instant::now();
+        let start = self
+            .workspace
+            .as_ref()
+            .map(|w| w.root().to_path_buf())
+            .or_else(|| self.open_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        match GitRepo::discover(&start) {
+            Ok(Some(repo)) => {
+                self.git_branch = repo.branch_name();
+            }
+            Ok(None) => self.git_branch = None,
+            Err(e) => {
+                debug!(error = %e, "git discover failed");
+                self.git_branch = None;
+            }
+        }
+    }
+
+    fn apply_workspace_event(&mut self, ev: FileSystemEvent) {
+        match ev {
+            FileSystemEvent::Created(_) | FileSystemEvent::Removed(_) => {
+                // Tree changed — rebuild sidebar + quick-open.
+                self.rebuild_workspace_entries();
+            }
+            FileSystemEvent::Renamed { from, to } => {
+                self.buffers.rename_buffer_path(&from, &to);
+                if self
+                    .active_buffer_id
+                    .and_then(|id| self.buffers.get(id))
+                    .and_then(|s| s.path.as_ref())
+                    .is_some_and(|p| p == &to)
+                {
+                    self.open_path = Some(to.clone());
+                }
+                self.rebuild_workspace_entries();
+            }
+            FileSystemEvent::Modified(path) => {
+                // Flag any matching buffer (including the active mirror) as externally modified.
+                let matches_active =
+                    self.open_path.as_ref().is_some_and(|cur| BufferManager::same_path(cur, &path));
+                if matches_active {
+                    if let Ok(m) = std::fs::metadata(&path).and_then(|x| x.modified()) {
+                        if self.file_mtime.is_none_or(|prev| prev != m) {
+                            self.external_modified = true;
+                        }
+                    }
+                }
+                if let Some(id) = self.buffers.find_by_path(&path) {
+                    if let Some(st) = self.buffers.get_mut(id) {
+                        if let Ok(m) = std::fs::metadata(&path).and_then(|x| x.modified()) {
+                            if st.file_mtime.is_none_or(|prev| prev != m) {
+                                st.external_modified = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn poll_workspace_events(&mut self) {
+        let Some(ws) = self.workspace.as_ref() else {
+            return;
+        };
+        let events = ws.poll_events();
+        if events.is_empty() {
+            return;
+        }
+        for ev in events {
+            self.apply_workspace_event(ev);
+        }
     }
 
     fn collapse_selection_to_cursor(&mut self) {
@@ -483,18 +1082,12 @@ impl App {
         self.scroll_cursor_into_view();
     }
 
-    /// Bottom Y of the text region in physical pixels (content above the status bar).
-    fn text_content_bottom_px(&self) -> Option<f64> {
-        let w = self.window.as_ref()?;
-        Some(f64::from(w.inner_size().height) - f64::from(self.status_bar_height_px()))
-    }
-
     /// Scroll by one line when the pointer sits in the top/bottom margin during drag (M09 §6.8).
     fn autoscroll_drag_edges(&mut self, y_px: f64) {
         let Some(renderer) = self.renderer.as_ref() else {
             return;
         };
-        let Some(content_bottom) = self.text_content_bottom_px() else {
+        let Some(content_bottom) = self.editor_content_bottom_px() else {
             return;
         };
         if content_bottom <= 1.0 {
@@ -512,6 +1105,74 @@ impl App {
         self.clamp_scroll();
     }
 
+    /// Handle a key press when the quick-open palette is active.
+    /// Returns `true` when the palette consumed the event (caller should not dispatch further).
+    fn handle_quick_open_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return false;
+        };
+        match code {
+            KeyCode::Escape => {
+                self.quick_open.hide();
+                true
+            }
+            KeyCode::Enter => {
+                if let Some(root) = self.workspace_root().map(Path::to_path_buf) {
+                    if let Some(path) = self.quick_open.selected_absolute(&root) {
+                        self.quick_open.hide();
+                        self.open_path_as_buffer(&path);
+                        return true;
+                    }
+                }
+                self.quick_open.hide();
+                true
+            }
+            KeyCode::ArrowUp => {
+                self.quick_open.move_selection(-1);
+                true
+            }
+            KeyCode::ArrowDown => {
+                self.quick_open.move_selection(1);
+                true
+            }
+            KeyCode::Backspace => {
+                self.quick_open.backspace();
+                true
+            }
+            _ => {
+                // Accept printable chars from `KeyEvent::text` only; filter out control-only.
+                if let Some(t) = event.text.as_ref() {
+                    if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
+                        for ch in t.chars() {
+                            self.quick_open.push_char(ch);
+                        }
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// Sidebar width in physical px when visible, else 0.
+    fn sidebar_width_px(&self) -> f32 {
+        if self.sidebar.visible {
+            self.sidebar.width * self.scale_factor
+        } else {
+            0.0
+        }
+    }
+
+    /// Tab strip height in physical px when any buffer is tracked, else 0.
+    fn tabstrip_height_px(&self) -> f32 {
+        if !self.buffers.is_empty() {
+            TAB_STRIP_HEIGHT * self.scale_factor
+        } else {
+            0.0
+        }
+    }
+
     /// Map physical window pixel to a UTF-8 boundary byte offset (M09; matches `editor-render` layout).
     fn hit_test_byte(&self, x_px: f64, y_px: f64) -> Option<BytePos> {
         let renderer = self.renderer.as_ref()?;
@@ -519,18 +1180,24 @@ impl App {
         let physical = w.inner_size();
         let line_h = renderer.line_height_px();
         let status_h = self.status_bar_height_px();
+        let term_h = self.terminal_pane_height_px();
+        let sidebar_w = self.sidebar_width_px();
+        let tab_h = self.tabstrip_height_px();
         let (gutter_w, char_w) =
             editor_render::compute_gutter_width_px(self.buffer.len_lines(), self.scale_factor);
-        let content_bottom = physical.height as f32 - status_h;
-        if y_px < 0.0 || y_px >= content_bottom as f64 {
+        let content_bottom = physical.height as f32 - status_h - term_h;
+        if y_px < tab_h as f64 || y_px >= content_bottom as f64 {
+            return None;
+        }
+        if x_px < sidebar_w as f64 {
             return None;
         }
         let total_lines = self.buffer.len_lines();
         if total_lines == 0 {
             return Some(BytePos(0));
         }
-        let y = y_px as f32;
-        let line_idx_f = (y - 4.0 + self.scroll.y_px) / line_h;
+        let y_rel = y_px as f32 - tab_h;
+        let line_idx_f = (y_rel - 4.0 + self.scroll.y_px) / line_h;
         let mut line_idx = line_idx_f.floor() as isize;
         if line_idx < 0 {
             line_idx = 0;
@@ -539,7 +1206,7 @@ impl App {
         if line_idx >= total_lines {
             line_idx = total_lines.saturating_sub(1);
         }
-        let body_left = 8.0 + gutter_w;
+        let body_left = sidebar_w + 8.0 + gutter_w;
         let dx = x_px as f32 - body_left;
         let line_start = self.buffer.line_to_byte(line_idx).ok()?;
         let line_len = self.buffer.line_len_bytes(line_idx).ok()?;
@@ -558,6 +1225,67 @@ impl App {
         }
         let x = x_px as f64;
         let y = y_px as f64;
+
+        // Quick-open overlay: outside-click dismisses; inside is swallowed (Enter/Esc handle selection).
+        if self.quick_open.visible {
+            self.quick_open.hide();
+            self.request_redraw();
+            return;
+        }
+
+        // Sidebar clicks (leftmost column).
+        let sidebar_w = self.sidebar_width_px() as f64;
+        if self.sidebar.visible && x < sidebar_w {
+            if let Some(idx) = self.sidebar.row_index_at_y(y as f32, self.scale_factor, 0.0) {
+                let row = self.sidebar.flat_rows()[idx].clone();
+                if row.is_dir {
+                    self.sidebar.toggle_dir(&row.rel);
+                    self.sidebar.rebuild_flat(&self.workspace_entries);
+                } else if let Some(root) = self.workspace_root() {
+                    let abs = root.join(&row.rel);
+                    self.open_path_as_buffer(&abs);
+                }
+                self.request_redraw();
+            }
+            return;
+        }
+
+        // Tab strip clicks.
+        let tab_h = self.tabstrip_height_px() as f64;
+        if tab_h > 0.0 && y < tab_h {
+            let xf = x as f32;
+            if let Some(hit) =
+                self.tab_hits.iter().find(|h| xf >= h.x0 && xf <= h.close_x1).cloned()
+            {
+                if xf >= hit.close_x0 && xf <= hit.close_x1 {
+                    // Close button — refuse if dirty.
+                    if self.buffers.get(hit.id).map(|s| s.dirty).unwrap_or(false)
+                        && self.active_buffer_id == Some(hit.id)
+                        && self.dirty
+                    {
+                        warn!(
+                            "close tab: refusing to close dirty buffer without save (Ctrl+S first)"
+                        );
+                    } else if hit.id == self.active_buffer_id.unwrap_or(BufferId(u64::MAX)) {
+                        // Closing the active buffer: run CloseBuffer path.
+                        let _ = self.apply_editor_command(EditorCommand::CloseBuffer);
+                    } else if self.buffers.close(hit.id, false).is_err() {
+                        warn!("close tab: refusing to close dirty inactive buffer");
+                    }
+                    self.request_redraw();
+                    return;
+                }
+                self.switch_to_buffer(hit.id);
+                self.request_redraw();
+            }
+            return;
+        }
+
+        if self.terminal_pane_visible && self.pointer_in_terminal_pane(y) {
+            self.terminal_focus = true;
+            return;
+        }
+        self.terminal_focus = false;
         let Some(byte) = self.hit_test_byte(x, y) else {
             return;
         };
@@ -610,10 +1338,13 @@ impl App {
             return;
         }
         let y = y_px as f64;
-        self.autoscroll_drag_edges(y);
-        let Some(cb) = self.text_content_bottom_px() else {
+        let Some(cb) = self.editor_content_bottom_px() else {
             return;
         };
+        if y >= cb {
+            return;
+        }
+        self.autoscroll_drag_edges(y);
         let y_max = (cb - 1.0).max(0.0);
         let y_clamped = y.clamp(0.0, y_max);
         let Some(byte) = self.hit_test_byte(x_px as f64, y_clamped) else {
@@ -657,6 +1388,9 @@ impl App {
                 self.sync_window_title();
             }
         }
+        if let Err(e) = self.settings_store.flush_pending_save() {
+            warn!(error = %e, "settings: debounced save failed");
+        }
     }
 
     fn apply_loaded(&mut self, l: LoadedFile) {
@@ -692,6 +1426,49 @@ impl App {
         }
     }
 
+    /// When the file on disk changed since load (`external_modified`), ask before overwriting (M25).
+    fn confirm_save_if_externally_modified(&mut self) -> bool {
+        if !self.external_modified {
+            return true;
+        }
+        let mut dlg = MessageDialog::new()
+            .set_level(MessageLevel::Warning)
+            .set_title("File changed on disk")
+            .set_description(
+                "This file was modified outside the editor since it was opened.\n\n\
+                 • Yes — save the editor buffer (overwrite the file on disk)\n\
+                 • No — reload from disk (discard unsaved editor changes)\n\
+                 • Cancel — do not save",
+            )
+            .set_buttons(MessageButtons::YesNoCancel);
+        if let Some(w) = self.window.as_ref() {
+            dlg = dlg.set_parent(w.as_ref());
+        }
+        match dlg.show() {
+            MessageDialogResult::Yes => true,
+            MessageDialogResult::No => {
+                self.reload_from_disk_best_effort();
+                false
+            }
+            MessageDialogResult::Cancel
+            | MessageDialogResult::Ok
+            | MessageDialogResult::Custom(_) => false,
+        }
+    }
+
+    fn reload_from_disk_best_effort(&mut self) {
+        let Some(ref path) = self.open_path else {
+            return;
+        };
+        match load_file_sync(path) {
+            Ok(l) => {
+                info!(path = %path.display(), "reloaded buffer from disk after external change");
+                self.apply_loaded(l);
+            }
+            Err(e) => warn!(path = %path.display(), error = %e, "reload from disk failed"),
+        }
+    }
+
     fn save_via_dialog_or_disk(&mut self) {
         if self.save_rx.is_some() {
             return;
@@ -704,6 +1481,9 @@ impl App {
         } else {
             return;
         };
+        if self.external_modified && !self.confirm_save_if_externally_modified() {
+            return;
+        }
         let snap = self.buffer.snapshot();
         let le = self.buffer.original_line_ending();
         let enc = self.disk_encoding;
@@ -716,6 +1496,8 @@ impl App {
         self.persisted.last_file = self.open_path.clone();
         self.persisted.last_cursor_byte = Some(self.cursor.pos().0 as u64);
         self.persisted.last_scroll_y = Some(self.scroll.y_px);
+        self.persisted.sidebar_width = Some(self.sidebar.width);
+        self.persisted.sidebar_visible = Some(self.sidebar.visible);
         if let Some(w) = &self.window {
             let s = w.inner_size();
             self.persisted.window_size = Some((s.width, s.height));
@@ -749,6 +1531,9 @@ impl App {
             encoding: enc,
             line_ending: self.buffer.original_line_ending(),
             external_modified: self.external_modified,
+            status_message: None,
+            git_branch: self.git_branch.clone(),
+            git_modified_count: None,
         }
     }
 
@@ -760,8 +1545,25 @@ impl App {
     /// redraw requests may not drain until the user releases the drag edge.
     fn paint_frame(&mut self) {
         self.poll_io();
+        self.poll_workspace_events();
+        self.refresh_git_branch(false);
+        // Keep the BufferManager snapshot of the active buffer in sync so the tab strip
+        // renders the correct label and dirty marker.
+        self.sync_active_metadata_only();
         let status = self.frame_status();
         let dev_hud_line = self.dev_hud.then(|| self.metrics.hud_line());
+        let term_snap_owned = if self.terminal_pane_visible {
+            let idx = self.active_terminal_slot_idx();
+            self.terminals[idx].as_ref().map(|t| t.emulator().lock().render_snapshot())
+        } else {
+            None
+        };
+        let terminal_pane_height_px = self.terminal_pane_height_px();
+
+        // Build chrome (sidebar + tab strip + quick-open overlay).
+        let (chrome_opt, inset_left_px, inset_top_px, tab_hits) = self.build_frame_chrome();
+        self.tab_hits = tab_hits;
+
         if let (Some(renderer), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) {
             let snap = self.buffer.snapshot();
             let physical = w.inner_size();
@@ -782,6 +1584,13 @@ impl App {
                 status: Some(status),
                 dev_hud_line,
                 selection_byte_range,
+                diff: None,
+                terminal_pane_height_px,
+                terminal_snapshot: term_snap_owned,
+                settings_overlay_lines: self.settings_overlay_lines.as_deref(),
+                frame_chrome: chrome_opt.as_ref(),
+                content_inset_left_px: inset_left_px,
+                content_inset_top_px: inset_top_px,
             };
             match renderer.render_frame(&input) {
                 Ok(timings) => {
@@ -806,6 +1615,68 @@ impl App {
                 Err(e) => tracing::warn!(error = %e, "render frame"),
             }
         }
+    }
+
+    /// Build sidebar + tab strip + quick-open chrome for the current frame.
+    /// Returns (Some(chrome), sidebar_width_px, tab_strip_height_px, tab_hits) when any
+    /// surface is visible, else (None, 0, 0, []) so the renderer can skip chrome entirely.
+    fn build_frame_chrome(&self) -> (Option<FrameChrome>, f32, f32, Vec<TabHit>) {
+        let Some(window) = self.window.as_ref() else {
+            return (None, 0.0, 0.0, Vec::new());
+        };
+        let physical = window.inner_size();
+        let scale = self.scale_factor;
+
+        let sidebar_on = self.sidebar.visible;
+        let tabstrip_on = !self.buffers.is_empty();
+
+        if !sidebar_on && !tabstrip_on && !self.quick_open.visible {
+            return (None, 0.0, 0.0, Vec::new());
+        }
+
+        let mut chrome = FrameChrome::new();
+        let inset_left_px = if sidebar_on { self.sidebar.width * scale } else { 0.0 };
+        let inset_top_px = if tabstrip_on { TAB_STRIP_HEIGHT * scale } else { 0.0 };
+
+        // Sidebar: leftmost column spanning from top to bottom (minus status bar + terminal).
+        if sidebar_on {
+            let status = self.status_bar_height_px();
+            let term = self.terminal_pane_height_px();
+            let viewport_h = (physical.height as f32 - status - term).max(1.0);
+            let auto =
+                if let (Some(abs), Some(root)) = (self.open_path.as_ref(), self.workspace_root()) {
+                    abs.strip_prefix(root).ok().map(Path::to_path_buf)
+                } else {
+                    None
+                };
+            self.sidebar.paint(
+                &mut chrome,
+                &self.buffers,
+                self.workspace_root(),
+                auto.as_deref(),
+                scale,
+                0.0,
+                viewport_h,
+            );
+        }
+
+        // Tab strip: sits just under any window chrome, offset right of the sidebar.
+        let mut tab_hits = Vec::new();
+        if tabstrip_on {
+            tab_hits = paint_tab_strip(&mut chrome, &self.buffers, scale, inset_left_px, 0.0, 0.0);
+        }
+
+        // Quick-open palette: dim overlay + centered card.
+        if self.quick_open.visible {
+            self.quick_open.paint(
+                &mut chrome,
+                scale,
+                physical.width as f32,
+                physical.height as f32,
+            );
+        }
+
+        (Some(chrome), inset_left_px, inset_top_px, tab_hits)
     }
 
     fn sync_window_title(&self) {
@@ -839,6 +1710,11 @@ impl App {
     fn apply_editor_command(&mut self, cmd: EditorCommand) -> bool {
         match cmd {
             EditorCommand::Quit => {
+                if self.settings_overlay_lines.is_some() {
+                    self.settings_overlay_lines = None;
+                    self.request_redraw();
+                    return false;
+                }
                 self.persist_session();
                 true
             }
@@ -1050,6 +1926,180 @@ impl App {
                 self.clamp_scroll();
                 false
             }
+            EditorCommand::ToggleFullscreen => {
+                if let Some(w) = self.window.as_ref() {
+                    if w.fullscreen().is_some() {
+                        w.set_fullscreen(None);
+                    } else {
+                        w.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    }
+                }
+                false
+            }
+            EditorCommand::ToggleTerminalPane => {
+                self.terminal_pane_visible = !self.terminal_pane_visible;
+                self.terminal_split_dragging = false;
+                if !self.terminal_pane_visible {
+                    self.terminal_focus = false;
+                } else {
+                    self.ensure_terminal_spawned();
+                    self.sync_terminal_size();
+                }
+                self.request_redraw();
+                false
+            }
+            EditorCommand::NewIntegratedTerminal => {
+                self.terminal_pane_visible = true;
+                self.ensure_terminal_spawned();
+                if self.terminals[1].is_none() {
+                    if let Err(e) = self.spawn_terminal(1) {
+                        warn!(error = %e, "spawn second integrated terminal");
+                    }
+                }
+                self.active_terminal_slot = 1;
+                self.sync_terminal_size();
+                self.request_redraw();
+                false
+            }
+            EditorCommand::OpenSettings => {
+                self.settings_overlay_lines = Some(format_settings_overlay(&self.settings_store));
+                self.request_redraw();
+                false
+            }
+            EditorCommand::Cancel => {
+                if self.quick_open.visible {
+                    self.quick_open.hide();
+                    self.request_redraw();
+                    return false;
+                }
+                if self.sidebar.focused {
+                    self.sidebar.focused = false;
+                    self.request_redraw();
+                    return false;
+                }
+                if self.settings_overlay_lines.take().is_some() {
+                    self.request_redraw();
+                }
+                false
+            }
+            EditorCommand::ToggleSidebar => {
+                self.sidebar.visible = !self.sidebar.visible;
+                if self.sidebar.visible && self.workspace.is_none() {
+                    // Best-effort: no workspace yet — offer to pick one.
+                    if let Some(root) = rfd::FileDialog::new().pick_folder() {
+                        self.open_workspace_folder(&root);
+                    }
+                }
+                self.sidebar.focused = self.sidebar.visible;
+                self.request_redraw();
+                false
+            }
+            EditorCommand::FocusSidebar => {
+                self.sidebar.visible = true;
+                self.sidebar.focused = true;
+                if self.sidebar.highlighted.is_none() {
+                    if let Some(row) = self.sidebar.flat_rows().first() {
+                        self.sidebar.highlighted = Some(row.rel.clone());
+                    }
+                }
+                self.request_redraw();
+                false
+            }
+            EditorCommand::ToggleQuickOpen => {
+                if self.workspace.is_none() {
+                    if let Some(root) = rfd::FileDialog::new().pick_folder() {
+                        self.open_workspace_folder(&root);
+                    }
+                }
+                if self.workspace.is_some() {
+                    if self.quick_open.visible {
+                        self.quick_open.hide();
+                    } else {
+                        self.quick_open.show();
+                    }
+                }
+                self.request_redraw();
+                false
+            }
+            EditorCommand::NextBuffer => {
+                if self.buffers.len() > 1 {
+                    if let Some(cur) = self.active_buffer_id {
+                        self.sync_active_to_manager_with_id(cur);
+                    }
+                    self.buffers.next_buffer();
+                    if let Some(id) = self.buffers.active() {
+                        self.load_state_from_buffer(id);
+                        self.reveal_active_in_sidebar();
+                    }
+                }
+                false
+            }
+            EditorCommand::PrevBuffer => {
+                if self.buffers.len() > 1 {
+                    if let Some(cur) = self.active_buffer_id {
+                        self.sync_active_to_manager_with_id(cur);
+                    }
+                    self.buffers.prev_buffer();
+                    if let Some(id) = self.buffers.active() {
+                        self.load_state_from_buffer(id);
+                        self.reveal_active_in_sidebar();
+                    }
+                }
+                false
+            }
+            EditorCommand::CloseBuffer => {
+                let Some(id) = self.active_buffer_id else {
+                    return false;
+                };
+                if self.dirty {
+                    warn!("close buffer: refusing to close dirty buffer without save (press Ctrl+S first)");
+                    return false;
+                }
+                if self.buffers.close(id, false).is_ok() {
+                    self.active_buffer_id = None;
+                    if let Some(next) = self.buffers.active() {
+                        self.load_state_from_buffer(next);
+                        self.reveal_active_in_sidebar();
+                    } else {
+                        // No buffers left — reset to an untitled empty one so the window
+                        // still has something to render.
+                        let new_id =
+                            self.buffers.create_empty_coalesced(self.persisted.undo_coalesce_ms);
+                        self.buffer = TextBuffer::new();
+                        self.cursor = Cursor::new(BytePos(0));
+                        self.selection = Selection::empty(BytePos(0));
+                        self.undo = UndoStack::default();
+                        self.scroll = ScrollOffset::default();
+                        self.open_path = None;
+                        self.disk_encoding = Encoding::Utf8;
+                        self.dirty = false;
+                        self.external_modified = false;
+                        self.file_mtime = None;
+                        self.active_buffer_id = Some(new_id);
+                    }
+                    self.sync_window_title();
+                }
+                false
+            }
+            EditorCommand::NewBuffer => {
+                if let Some(cur) = self.active_buffer_id {
+                    self.sync_active_to_manager_with_id(cur);
+                }
+                let id = self.buffers.create_empty_coalesced(self.persisted.undo_coalesce_ms);
+                self.buffer = TextBuffer::new();
+                self.cursor = Cursor::new(BytePos(0));
+                self.selection = Selection::empty(BytePos(0));
+                self.undo = UndoStack::default();
+                self.scroll = ScrollOffset::default();
+                self.open_path = None;
+                self.disk_encoding = Encoding::Utf8;
+                self.dirty = false;
+                self.external_modified = false;
+                self.file_mtime = None;
+                self.active_buffer_id = Some(id);
+                self.sync_window_title();
+                false
+            }
         }
     }
 }
@@ -1060,6 +2110,19 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::BlinkTick => {
                 self.blink_on = !self.blink_on;
                 self.request_redraw();
+            }
+            AppEvent::TerminalPump => {
+                if self.terminal_pane_visible {
+                    let mut dirty = false;
+                    for t in self.terminals.iter_mut().flatten() {
+                        if t.poll() {
+                            dirty = true;
+                        }
+                    }
+                    if dirty {
+                        self.request_redraw();
+                    }
+                }
             }
         }
     }
@@ -1106,6 +2169,7 @@ impl ApplicationHandler<AppEvent> for App {
                     r.sync_present_mode(w);
                     r.set_scale_factor(self.scale_factor);
                 }
+                self.sync_terminal_size();
                 self.paint_frame();
             }
             WindowEvent::Resized(size) => {
@@ -1114,6 +2178,7 @@ impl ApplicationHandler<AppEvent> for App {
                     r.sync_present_mode(w);
                 }
                 self.clamp_scroll();
+                self.sync_terminal_size();
                 self.paint_frame();
             }
             WindowEvent::Moved(_) => {
@@ -1138,6 +2203,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_pointer = position;
+                if self.terminal_split_dragging {
+                    self.update_terminal_split_from_pointer_y(position.y);
+                    self.sync_terminal_size();
+                    self.request_redraw();
+                    return;
+                }
                 if let Some(cmd) = self.mouse_chord.on_cursor_moved(position) {
                     let quit = self.apply_editor_command(cmd);
                     self.sync_window_title();
@@ -1149,6 +2220,22 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left {
+                    match state {
+                        ElementState::Pressed => {
+                            if self.terminal_pane_visible
+                                && self.pointer_on_terminal_divider(self.last_pointer.y)
+                            {
+                                self.terminal_split_dragging = true;
+                                self.update_terminal_split_from_pointer_y(self.last_pointer.y);
+                                self.sync_terminal_size();
+                                self.request_redraw();
+                                return;
+                            }
+                        }
+                        ElementState::Released => {
+                            self.terminal_split_dragging = false;
+                        }
+                    }
                     if let Some(cmd) = self.mouse_chord.on_left_button(
                         state,
                         button,
@@ -1166,14 +2253,30 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = scroll_delta_y_pixels(delta, self.scale_factor);
-                if dy != 0.0 {
-                    let quit =
-                        self.apply_editor_command(EditorCommand::ScrollContent { delta_y_px: dy });
-                    self.sync_window_title();
-                    self.request_redraw();
-                    if quit {
-                        event_loop.exit();
+                if dy == 0.0 {
+                    return;
+                }
+                if self.terminal_focus
+                    && self.terminal_pane_visible
+                    && self.pointer_in_terminal_pane(self.last_pointer.y)
+                {
+                    let line_h = self.renderer.as_ref().map(|r| r.line_height_px()).unwrap_or(20.0);
+                    let lines = (-dy / line_h).round() as i32;
+                    if lines != 0 {
+                        let slot = self.active_terminal_slot_idx();
+                        if let Some(ref t) = self.terminals[slot] {
+                            t.emulator().lock().scroll_lines(lines);
+                        }
                     }
+                    self.request_redraw();
+                    return;
+                }
+                let quit =
+                    self.apply_editor_command(EditorCommand::ScrollContent { delta_y_px: dy });
+                self.sync_window_title();
+                self.request_redraw();
+                if quit {
+                    event_loop.exit();
                 }
             }
             WindowEvent::Ime(ime) => match ime {
@@ -1182,6 +2285,26 @@ impl ApplicationHandler<AppEvent> for App {
                     self.request_redraw();
                 }
                 Ime::Commit(text) => {
+                    if self.quick_open.visible && !text.is_empty() {
+                        for ch in text.chars() {
+                            self.quick_open.push_char(ch);
+                        }
+                        self.request_redraw();
+                        return;
+                    }
+                    if self.terminal_focus
+                        && self.terminal_pane_visible
+                        && self.settings_overlay_lines.is_none()
+                    {
+                        if !text.is_empty() {
+                            let slot = self.active_terminal_slot_idx();
+                            if let Some(ref mut t) = self.terminals[slot] {
+                                let _ = t.write_bytes(text.as_bytes());
+                            }
+                        }
+                        self.request_redraw();
+                        return;
+                    }
                     if !text.is_empty() && !self.document_loading {
                         self.ime_suppress_next_keytext = true;
                         let _ = self.apply_editor_command(EditorCommand::InsertText(text));
@@ -1195,6 +2318,10 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 if is_synthetic {
+                    return;
+                }
+                if self.quick_open.visible && self.handle_quick_open_key(&event) {
+                    self.request_redraw();
                     return;
                 }
                 if let Some(cmd) = map_key_event(&event, self.modifiers) {

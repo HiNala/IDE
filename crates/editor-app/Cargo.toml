@@ -22,11 +22,17 @@ name = "editor-app"
 path = "src/main.rs"
 
 [dependencies]
-editor-core    = { path = "../editor-core" }
-editor-render  = { path = "../editor-render" }
-editor-input   = { path = "../editor-input" }
-editor-io      = { path = "../editor-io" }
-editor-ui      = { path = "../editor-ui" }
+editor-core       = { path = "../editor-core" }
+editor-render     = { path = "../editor-render" }
+editor-input      = { path = "../editor-input" }
+editor-io         = { path = "../editor-io" }
+editor-ui         = { path = "../editor-ui" }
+editor-workspace  = { path = "../editor-workspace" }
+editor-skills     = { path = "../editor-skills" }
+editor-settings   = { path = "../editor-settings" }
+editor-terminal   = { path = "../editor-terminal" }
+editor-index      = { path = "../editor-index" }
+editor-git        = { path = "../editor-git" }
 
 directories        = { workspace = true }
 serde              = { workspace = true }
@@ -46,10 +52,10 @@ tracing-tracy      = { version = "0.11", optional = true }
 winres = "0.1"
 
 [dev-dependencies]
-tempfile = { workspace = true }
+criterion  = { workspace = true }
+tempfile   = { workspace = true }
 
 [features]
 default = []
 dev-overlay = []
-# Tracy frame profiler (optional; see M07 observability).
 tracy = ["dep:tracing-tracy"]

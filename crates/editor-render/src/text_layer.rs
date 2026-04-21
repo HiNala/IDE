@@ -3,7 +3,8 @@
 use std::cmp::min;
 
 use editor_core::{ScrollOffset, TextBufferSnapshot};
-use editor_ui::StatusBarLayout;
+use editor_terminal::TerminalRenderSnapshot;
+use editor_ui::{FrameChrome, StatusBarLayout};
 use glyphon::{
     Attrs, Buffer, Cache, Color, ColorMode, ContentType, CustomGlyph, Family, FontSystem, Metrics,
     PrepareError, RasterizeCustomGlyphRequest, RasterizedCustomGlyph, Resolution, Shaping,
@@ -15,7 +16,6 @@ use winit::dpi::PhysicalSize;
 
 use crate::error::RenderError;
 
-/// Bundled monospace so the editor renders without relying on system font installs (M04).
 const BUNDLED_JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 const BUNDLED_MONO_FAMILY: &str = "JetBrains Mono";
 
@@ -40,7 +40,7 @@ pub fn compute_gutter_width_px(total_lines: usize, scale_factor: f32) -> (f32, f
     (gutter_w, char_w)
 }
 
-#[allow(clippy::too_many_arguments)] // One row gutter + body pair per visible line.
+#[allow(clippy::too_many_arguments)]
 fn build_layer_text_areas<'a>(
     gutter_buffers: &'a [Buffer],
     line_buffers: &'a [Buffer],
@@ -51,20 +51,30 @@ fn build_layer_text_areas<'a>(
     scroll: ScrollOffset,
     line_h: f32,
     clip_bottom: i32,
+    content_inset_left_px: f32,
+    content_inset_top_px: f32,
 ) -> Vec<TextArea<'a>> {
     let w = physical_size.width as i32;
-    let gutter_right = (8.0 + gutter_w).round() as i32;
-    let body_left = 8.0 + gutter_w;
+    let gutter_left = 8.0 + content_inset_left_px;
+    let gutter_right = (gutter_left + gutter_w).round() as i32;
+    let body_left = gutter_left + gutter_w;
+    let clip_t = content_inset_top_px.max(0.0).round() as i32;
+    let clip_l = content_inset_left_px.max(0.0).round() as i32;
     let mut areas = Vec::with_capacity(line_buffers.len() * 2);
     for i in 0..line_buffers.len() {
         let line_idx = first + i;
-        let top = (line_idx as f32) * line_h - scroll.y_px + 4.0;
+        let top = (line_idx as f32) * line_h - scroll.y_px + 4.0 + content_inset_top_px;
         areas.push(TextArea {
             buffer: &gutter_buffers[i],
-            left: 8.0,
+            left: gutter_left,
             top,
             scale: 1.0,
-            bounds: TextBounds { left: 0, top: 0, right: gutter_right, bottom: clip_bottom },
+            bounds: TextBounds {
+                left: clip_l,
+                top: clip_t,
+                right: gutter_right,
+                bottom: clip_bottom,
+            },
             default_color: Color::rgb(0x78, 0x78, 0x78),
             custom_glyphs: &[],
         });
@@ -102,11 +112,101 @@ fn push_dev_hud_text_area<'a>(
     }
 }
 
+/// Append integrated-terminal [`TextArea`]s; `bufs` must match `snapshot` run count.
+#[allow(clippy::too_many_arguments)]
+fn push_terminal_text_areas<'a>(
+    areas: &mut Vec<TextArea<'a>>,
+    bufs: &'a [Buffer],
+    snapshot: &TerminalRenderSnapshot,
+    physical_size: PhysicalSize<u32>,
+    scale_factor: f32,
+    status_h: f32,
+    terminal_pane_height_px: f32,
+    line_h: f32,
+    content_inset_left_px: f32,
+) {
+    if terminal_pane_height_px <= 0.5 || snapshot.rows.is_empty() {
+        return;
+    }
+    let run_count: usize = snapshot.rows.iter().map(|r| r.runs.len()).sum();
+    debug_assert_eq!(run_count, bufs.len(), "terminal buffers must match snapshot runs");
+    let (gutter_w, char_w) = compute_gutter_width_px(snapshot.rows.len().max(1), scale_factor);
+    let body_left = content_inset_left_px + 8.0 + gutter_w;
+    let term_top = physical_size.height as f32 - status_h - terminal_pane_height_px + 4.0;
+    let w = physical_size.width as i32;
+    let h = physical_size.height as i32;
+    let term_clip_top = term_top.round().max(0.0) as i32;
+    let mut idx = 0usize;
+    for (row_i, row) in snapshot.rows.iter().enumerate() {
+        let top = term_top + row_i as f32 * line_h;
+        let mut x = body_left;
+        for (text, _fg, _) in &row.runs {
+            let buf = &bufs[idx];
+            idx += 1;
+            areas.push(TextArea {
+                buffer: buf,
+                left: x,
+                top,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: term_clip_top, right: w, bottom: h },
+                default_color: Color::rgb(0xe0, 0xe0, 0xe0),
+                custom_glyphs: &[],
+            });
+            x += text.chars().count() as f32 * char_w;
+        }
+    }
+    debug_assert_eq!(idx, bufs.len(), "terminal buffer index mismatch");
+}
+
+/// Shape [`FrameChrome`] text lines into buffers and append matching [`TextArea`]s.
+#[allow(clippy::too_many_arguments)]
+fn push_frame_chrome_text_areas<'a>(
+    font_system: &mut FontSystem,
+    chrome_overlay_buffers: &'a mut Vec<Buffer>,
+    scale_factor: f32,
+    frame_chrome: Option<&FrameChrome>,
+    physical_size: PhysicalSize<u32>,
+    areas: &mut Vec<TextArea<'a>>,
+) {
+    chrome_overlay_buffers.clear();
+    let Some(fc) = frame_chrome else {
+        return;
+    };
+    if fc.lines.is_empty() {
+        return;
+    }
+    let cmetrics = Metrics::new(13.0 * scale_factor, 18.0 * scale_factor);
+    for line in &fc.lines {
+        let mut buf = Buffer::new(font_system, cmetrics);
+        buf.set_size(font_system, Some(physical_size.width as f32), None);
+        let attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY)).color(Color::rgb(
+            line.rgb[0],
+            line.rgb[1],
+            line.rgb[2],
+        ));
+        buf.set_text(font_system, &line.text, &attrs, Shaping::Advanced, None);
+        buf.shape_until_scroll(font_system, false);
+        chrome_overlay_buffers.push(buf);
+    }
+    let w = physical_size.width as i32;
+    let h = physical_size.height as i32;
+    for (line, buf) in fc.lines.iter().zip(chrome_overlay_buffers.iter()) {
+        areas.push(TextArea {
+            buffer: buf,
+            left: line.left,
+            top: line.top,
+            scale: 1.0,
+            bounds: TextBounds { left: 0, top: 0, right: w, bottom: h },
+            default_color: Color::rgb(line.rgb[0], line.rgb[1], line.rgb[2]),
+            custom_glyphs: &[],
+        });
+    }
+}
+
 /// Renders visible lines from a [`TextBufferSnapshot`] into an existing wgpu pass.
 pub struct TextLayer {
     font_system: FontSystem,
     swash_cache: SwashCache,
-    /// Must outlive [`Viewport`] / [`TextAtlas`] bind groups.
     #[allow(dead_code)]
     cache: Cache,
     atlas: TextAtlas,
@@ -114,12 +214,14 @@ pub struct TextLayer {
     text_renderer: TextRenderer,
     line_buffers: Vec<Buffer>,
     custom_glyphs_per_line: Vec<Vec<CustomGlyph>>,
-    /// Bottom status line (retained so [`TextArea`] can borrow it for one frame).
     status_line_buffer: Option<Buffer>,
-    /// Top-right dev HUD (F11 metrics overlay).
     dev_hud_buffer: Option<Buffer>,
-    /// Left gutter line-number strings (one buffer per visible row).
     gutter_line_buffers: Vec<Buffer>,
+    settings_overlay_buffer: Option<Buffer>,
+    /// Shaped terminal rows (integrated PTY view, M26).
+    terminal_buffers: Vec<Buffer>,
+    /// Sidebar / tab strip / quick-open text lines (M14), shaped as glyphon buffers.
+    chrome_overlay_buffers: Vec<Buffer>,
     scale_factor: f32,
 }
 
@@ -130,7 +232,6 @@ impl std::fmt::Debug for TextLayer {
 }
 
 impl TextLayer {
-    /// Build atlas, pipelines, and load bundled JetBrains Mono plus system fallbacks.
     pub fn new(device: &Device, queue: &Queue, surface_format: TextureFormat) -> Self {
         let mut font_system = FontSystem::new();
         font_system.db_mut().load_font_data(BUNDLED_JETBRAINS_MONO.to_vec());
@@ -156,6 +257,9 @@ impl TextLayer {
             status_line_buffer: None,
             dev_hud_buffer: None,
             gutter_line_buffers: Vec::new(),
+            settings_overlay_buffer: None,
+            terminal_buffers: Vec::new(),
+            chrome_overlay_buffers: Vec::new(),
             scale_factor: 1.0,
         }
     }
@@ -164,7 +268,6 @@ impl TextLayer {
         self.scale_factor = scale;
     }
 
-    /// Matches [`Self::prepare`] line metrics (keep selection quads aligned with glyphs).
     #[must_use]
     pub fn line_height_px(&self) -> f32 {
         Metrics::new(14.0 * self.scale_factor, 20.0 * self.scale_factor).line_height
@@ -174,7 +277,7 @@ impl TextLayer {
         self.atlas.trim();
     }
 
-    #[allow(clippy::too_many_arguments)] // Glyph layout needs line range + cursor metrics together.
+    #[allow(clippy::too_many_arguments)]
     fn fill_visible_lines(
         &mut self,
         snapshot: &TextBufferSnapshot,
@@ -254,8 +357,89 @@ impl TextLayer {
         }
     }
 
-    /// Shape glyphs and upload atlas data. Call before starting the render pass.
-    #[allow(clippy::too_many_arguments)] // Matches wgpu + document snapshot inputs.
+    fn shape_terminal_buffers(
+        &mut self,
+        snapshot: &TerminalRenderSnapshot,
+        physical_size: PhysicalSize<u32>,
+        metrics: Metrics,
+        terminal_pane_height_px: f32,
+    ) {
+        self.terminal_buffers.clear();
+        if terminal_pane_height_px <= 0.5 || snapshot.rows.is_empty() {
+            return;
+        }
+        for row in &snapshot.rows {
+            for (text, fg, _) in &row.runs {
+                let mut buf = Buffer::new(&mut self.font_system, metrics);
+                buf.set_size(&mut self.font_system, Some(physical_size.width as f32), None);
+                let attrs = Attrs::new()
+                    .family(Family::Name(BUNDLED_MONO_FAMILY))
+                    .color(Color::rgb(fg[0], fg[1], fg[2]));
+                buf.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced, None);
+                buf.shape_until_scroll(&mut self.font_system, false);
+                self.terminal_buffers.push(buf);
+            }
+        }
+    }
+
+    fn prepare_settings_overlay(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        lines: &[String],
+        physical_size: PhysicalSize<u32>,
+    ) -> Result<(), RenderError> {
+        self.settings_overlay_buffer = None;
+        self.terminal_buffers.clear();
+        self.chrome_overlay_buffers.clear();
+        self.line_buffers.clear();
+        self.custom_glyphs_per_line.clear();
+        self.gutter_line_buffers.clear();
+        self.status_line_buffer = None;
+        self.dev_hud_buffer = None;
+
+        let text = lines.join("\n");
+        let metrics = Metrics::new(14.0 * self.scale_factor, 20.0 * self.scale_factor);
+        let attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY));
+        let mut buf = Buffer::new(&mut self.font_system, metrics);
+        buf.set_size(&mut self.font_system, Some(physical_size.width as f32), None);
+        buf.set_text(&mut self.font_system, &text, &attrs, Shaping::Advanced, None);
+        buf.shape_until_scroll(&mut self.font_system, false);
+        self.settings_overlay_buffer = Some(buf);
+
+        self.viewport.update(
+            queue,
+            Resolution { width: physical_size.width.max(1), height: physical_size.height.max(1) },
+        );
+
+        let w = physical_size.width as i32;
+        let h = physical_size.height as i32;
+        let areas = vec![TextArea {
+            buffer: self.settings_overlay_buffer.as_ref().expect("just set"),
+            left: 12.0,
+            top: 12.0,
+            scale: 1.0,
+            bounds: TextBounds { left: 0, top: 0, right: w, bottom: h },
+            default_color: Color::rgb(0xE0, 0xE0, 0xE0),
+            custom_glyphs: &[],
+        }];
+
+        self.text_renderer
+            .prepare_with_custom(
+                device,
+                queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                areas,
+                &mut self.swash_cache,
+                rasterize_cursor,
+            )
+            .map_err(|e| RenderError::TextPrepare(e.to_string()))
+    }
+
+    /// Shapes the document, optional settings overlay, and optional integrated terminal (M26).
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         device: &Device,
@@ -267,15 +451,28 @@ impl TextLayer {
         cursor_blink_on: bool,
         status_bar: Option<&StatusBarLayout>,
         dev_hud_line: Option<&str>,
+        terminal_pane_height_px: f32,
+        terminal_snapshot: Option<&TerminalRenderSnapshot>,
+        settings_overlay: Option<&[String]>,
+        frame_chrome: Option<&FrameChrome>,
+        content_inset_left_px: f32,
+        content_inset_top_px: f32,
     ) -> Result<(), RenderError> {
+        if let Some(lines) = settings_overlay {
+            return self.prepare_settings_overlay(device, queue, lines, physical_size);
+        }
+        self.settings_overlay_buffer = None;
+
         let rope = snapshot.rope();
         let total_lines = rope.len_lines();
         let metrics = Metrics::new(14.0 * self.scale_factor, 20.0 * self.scale_factor);
         let line_h = metrics.line_height;
 
         let status_h = status_bar.map(|s| s.height_px).unwrap_or(0.0);
-        let content_px = (physical_size.height as f32 - status_h).max(1.0);
-        let clip_bottom = content_px.round() as i32;
+        let term_h = terminal_pane_height_px.max(0.0);
+        let content_px =
+            (physical_size.height as f32 - status_h - term_h - content_inset_top_px).max(1.0);
+        let clip_bottom = (physical_size.height as f32 - status_h - term_h).round().max(1.0) as i32;
 
         self.viewport.update(
             queue,
@@ -318,6 +515,12 @@ impl TextLayer {
 
         self.set_dev_hud_buffer(dev_hud_line);
 
+        if let Some(snap) = terminal_snapshot {
+            self.shape_terminal_buffers(snap, physical_size, metrics, term_h);
+        } else {
+            self.terminal_buffers.clear();
+        }
+
         let mut areas = build_layer_text_areas(
             &self.gutter_line_buffers,
             &self.line_buffers,
@@ -328,6 +531,8 @@ impl TextLayer {
             scroll,
             line_h,
             clip_bottom,
+            content_inset_left_px,
+            content_inset_top_px,
         );
 
         if let (Some(sb), Some(buf)) = (status_bar, self.status_line_buffer.as_ref()) {
@@ -350,6 +555,29 @@ impl TextLayer {
             self.dev_hud_buffer.as_ref(),
             physical_size,
             clip_bottom,
+            &mut areas,
+        );
+
+        if let Some(snap) = terminal_snapshot {
+            push_terminal_text_areas(
+                &mut areas,
+                &self.terminal_buffers,
+                snap,
+                physical_size,
+                self.scale_factor,
+                status_h,
+                term_h,
+                line_h,
+                content_inset_left_px,
+            );
+        }
+
+        push_frame_chrome_text_areas(
+            &mut self.font_system,
+            &mut self.chrome_overlay_buffers,
+            self.scale_factor,
+            frame_chrome,
+            physical_size,
             &mut areas,
         );
 
@@ -390,6 +618,11 @@ impl TextLayer {
                 }
                 self.set_dev_hud_buffer(dev_hud_line);
                 self.fill_gutter_buffers(first, last, total_lines, gutter_w, metrics);
+                if let Some(snap) = terminal_snapshot {
+                    self.shape_terminal_buffers(snap, physical_size, metrics, term_h);
+                } else {
+                    self.terminal_buffers.clear();
+                }
                 let mut areas2 = build_layer_text_areas(
                     &self.gutter_line_buffers,
                     &self.line_buffers,
@@ -400,6 +633,8 @@ impl TextLayer {
                     scroll,
                     line_h,
                     clip_bottom,
+                    content_inset_left_px,
+                    content_inset_top_px,
                 );
                 if let (Some(sb), Some(buf)) = (status_bar, self.status_line_buffer.as_ref()) {
                     let w = physical_size.width as i32;
@@ -423,6 +658,27 @@ impl TextLayer {
                     clip_bottom,
                     &mut areas2,
                 );
+                if let Some(snap) = terminal_snapshot {
+                    push_terminal_text_areas(
+                        &mut areas2,
+                        &self.terminal_buffers,
+                        snap,
+                        physical_size,
+                        self.scale_factor,
+                        status_h,
+                        term_h,
+                        line_h,
+                        content_inset_left_px,
+                    );
+                }
+                push_frame_chrome_text_areas(
+                    &mut self.font_system,
+                    &mut self.chrome_overlay_buffers,
+                    self.scale_factor,
+                    frame_chrome,
+                    physical_size,
+                    &mut areas2,
+                );
                 self.text_renderer
                     .prepare_with_custom(
                         device,
@@ -443,5 +699,11 @@ impl TextLayer {
         self.text_renderer
             .render(&self.atlas, &self.viewport, pass)
             .map_err(|e| RenderError::TextRender(e.to_string()))
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_visible_row_slot_count_for_tests(&self) -> usize {
+        self.line_buffers.len()
     }
 }

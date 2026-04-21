@@ -1,9 +1,16 @@
 //! Property tests for edit apply + inverse round-trips.
+//!
+//! **256 cases** per property (M02).
 
 use editor_core::{BytePos, EditKind, TextBuffer};
 use proptest::prelude::*;
 
 proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        ..ProptestConfig::default()
+    })]
+
     #[test]
     fn insert_delete_roundtrip(inserts in prop::collection::vec("[a-z]{1,3}", 1..8)) {
         let mut buf = TextBuffer::new();

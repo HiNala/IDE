@@ -1,6 +1,7 @@
 # Rust
 /target/
 **/target/
+/target-ws-test/
 **/*.rs.bk
 *.pdb
 
@@ -11,6 +12,7 @@
 # IDE / editor temp files
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 .DS_Store
@@ -55,3 +57,14 @@ lcov.info
 # Scratch space for human + agent notes that should not ship
 /scratch/
 /tmp/
+
+# Agent / local alternate Cargo target dirs (never commit)
+/target-*/
+/_*.txt
+/M12_RESTORE_NOTES.txt
+/restore_*.ps1
+/check_out.txt
+
+# Local vector index (derived; `editor-app index --rebuild` regenerates)
+.ide/index.sqlite
+.ide/index.sqlite-journal

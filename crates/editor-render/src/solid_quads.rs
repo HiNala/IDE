@@ -1,4 +1,4 @@
-//! Translucent axis-aligned quads (selection highlight under text).
+//! Translucent axis-aligned quads (selection + diff under text).
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::{
@@ -15,16 +15,13 @@ struct ColoredVertex {
     color: [f32; 4],
 }
 
-/// Max rectangles (each becomes two triangles / six vertices).
-const MAX_RECTS: usize = 1024;
-
-/// Premultiplied-ish RGBA for selection (M09: translucent blue).
-const SELECTION_COLOR: [f32; 4] = [48.0 / 255.0, 80.0 / 255.0, 144.0 / 255.0, 0.35];
+const MAX_RECTS: usize = 4096;
 
 pub struct SolidQuadLayer {
     pipeline: RenderPipeline,
     vertex_buffer: Buffer,
     vertex_count: u32,
+    verts_scratch: Vec<ColoredVertex>,
 }
 
 impl SolidQuadLayer {
@@ -33,13 +30,11 @@ impl SolidQuadLayer {
             label: Some("solid-quad-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/solid_quad.wgsl").into()),
         });
-
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("solid-quad-pl"),
             bind_group_layouts: &[],
             immediate_size: 0,
         });
-
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("solid-quad-pipeline"),
             layout: Some(&pipeline_layout),
@@ -65,31 +60,29 @@ impl SolidQuadLayer {
             multiview_mask: None,
             cache: None,
         });
-
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("solid-quad-vb"),
             size: (MAX_RECTS * 6 * std::mem::size_of::<ColoredVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
-        Self { pipeline, vertex_buffer, vertex_count: 0 }
+        Self { pipeline, vertex_buffer, vertex_count: 0, verts_scratch: Vec::new() }
     }
 
-    /// Rebuild triangles for pixel-space axis-aligned rects (top-left origin, Y down).
+    /// Pixel rects `(left, top, right, bottom, premultiplied-ish RGBA)`.
     pub fn prepare(
         &mut self,
         _device: &Device,
         queue: &Queue,
         viewport_w: u32,
         viewport_h: u32,
-        rects: &[(f32, f32, f32, f32)],
+        rects: &[(f32, f32, f32, f32, [f32; 4])],
     ) {
         let vw = viewport_w.max(1) as f32;
         let vh = viewport_h.max(1) as f32;
-
-        let mut verts: Vec<ColoredVertex> = Vec::with_capacity(rects.len() * 6);
-        for &(left, top, right, bottom) in rects {
+        self.verts_scratch.clear();
+        self.verts_scratch.reserve(rects.len().saturating_mul(6));
+        for &(left, top, right, bottom, c) in rects {
             if right <= left || bottom <= top {
                 continue;
             }
@@ -97,25 +90,22 @@ impl SolidQuadLayer {
             let r = right / vw * 2.0 - 1.0;
             let t_ndc = 1.0 - (top / vh) * 2.0;
             let b_ndc = 1.0 - (bottom / vh) * 2.0;
-            let c = SELECTION_COLOR;
-            // Two triangles: (l,t_ndc)-(r,t_ndc)-(l,b_ndc) and (r,t_ndc)-(r,b_ndc)-(l,b_ndc)
-            verts.push(ColoredVertex { pos: [l, t_ndc], color: c });
-            verts.push(ColoredVertex { pos: [r, t_ndc], color: c });
-            verts.push(ColoredVertex { pos: [l, b_ndc], color: c });
-            verts.push(ColoredVertex { pos: [r, t_ndc], color: c });
-            verts.push(ColoredVertex { pos: [r, b_ndc], color: c });
-            verts.push(ColoredVertex { pos: [l, b_ndc], color: c });
+            self.verts_scratch.push(ColoredVertex { pos: [l, t_ndc], color: c });
+            self.verts_scratch.push(ColoredVertex { pos: [r, t_ndc], color: c });
+            self.verts_scratch.push(ColoredVertex { pos: [l, b_ndc], color: c });
+            self.verts_scratch.push(ColoredVertex { pos: [r, t_ndc], color: c });
+            self.verts_scratch.push(ColoredVertex { pos: [r, b_ndc], color: c });
+            self.verts_scratch.push(ColoredVertex { pos: [l, b_ndc], color: c });
         }
-
-        self.vertex_count = verts.len() as u32;
-        if verts.is_empty() {
+        self.vertex_count = self.verts_scratch.len() as u32;
+        if self.verts_scratch.is_empty() {
             return;
         }
-        if verts.len() > MAX_RECTS * 6 {
-            verts.truncate(MAX_RECTS * 6);
-            self.vertex_count = verts.len() as u32;
+        if self.verts_scratch.len() > MAX_RECTS * 6 {
+            self.verts_scratch.truncate(MAX_RECTS * 6);
+            self.vertex_count = self.verts_scratch.len() as u32;
         }
-        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.verts_scratch));
     }
 
     pub fn render<'a>(&'a self, pass: &mut RenderPass<'a>) {

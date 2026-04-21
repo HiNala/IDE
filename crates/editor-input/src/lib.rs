@@ -4,6 +4,7 @@
 
 pub mod command;
 pub mod mouse;
+pub mod settings_keys;
 
 use winit::event::ElementState;
 use winit::event::KeyEvent;
@@ -11,6 +12,7 @@ use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 
 pub use command::EditorCommand;
 pub use mouse::{scroll_delta_y_pixels, MouseChordState};
+pub use settings_keys::{map_settings_key, SettingsCommand};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -21,7 +23,8 @@ pub fn banner() -> String {
 
 /// Primary shortcut modifier: **Command** on macOS, **Ctrl** on Windows/Linux.
 #[inline]
-fn primary_mod(m: &ModifiersState) -> bool {
+#[must_use]
+pub fn primary_modifier_active(m: &ModifiersState) -> bool {
     if cfg!(target_os = "macos") {
         m.super_key()
     } else {
@@ -46,17 +49,53 @@ fn word_mod(m: &ModifiersState) -> bool {
 /// - **Repeat** events are passed through so key-repeat works for typing and navigation.
 #[must_use]
 pub fn map_key_event(event: &KeyEvent, modifiers: ModifiersState) -> Option<EditorCommand> {
-    if event.state != ElementState::Pressed {
+    map_keyboard_input(
+        event.physical_key,
+        event.text.as_ref().map(|t| t.as_str()),
+        event.state,
+        modifiers,
+    )
+}
+
+/// Same semantics as [`map_key_event`], without requiring a full [`KeyEvent`] (benchmarks / tests).
+#[doc(hidden)]
+#[must_use]
+pub fn map_keyboard_input(
+    physical_key: PhysicalKey,
+    text: Option<&str>,
+    state: ElementState,
+    modifiers: ModifiersState,
+) -> Option<EditorCommand> {
+    if state != ElementState::Pressed {
         return None;
     }
 
     let wm = word_mod(&modifiers);
-    let pm = primary_mod(&modifiers);
+    let pm = primary_modifier_active(&modifiers);
 
-    if let PhysicalKey::Code(code) = event.physical_key {
+    if let PhysicalKey::Code(code) = physical_key {
+        if matches!(code, KeyCode::F11) {
+            if pm {
+                return Some(EditorCommand::ToggleDevHud);
+            }
+            return Some(EditorCommand::ToggleFullscreen);
+        }
         // Global shortcuts
         if pm {
             match code {
+                KeyCode::Tab => {
+                    return Some(if modifiers.shift_key() {
+                        EditorCommand::PrevBuffer
+                    } else {
+                        EditorCommand::NextBuffer
+                    });
+                }
+                KeyCode::KeyN => return Some(EditorCommand::NewBuffer),
+                KeyCode::KeyW => return Some(EditorCommand::CloseBuffer),
+                KeyCode::Backquote if modifiers.shift_key() => {
+                    return Some(EditorCommand::NewIntegratedTerminal);
+                }
+                KeyCode::Backquote => return Some(EditorCommand::ToggleTerminalPane),
                 KeyCode::KeyZ if !modifiers.shift_key() => return Some(EditorCommand::Undo),
                 KeyCode::KeyZ if modifiers.shift_key() => return Some(EditorCommand::Redo),
                 KeyCode::KeyY => return Some(EditorCommand::Redo),
@@ -66,6 +105,11 @@ pub fn map_key_event(event: &KeyEvent, modifiers: ModifiersState) -> Option<Edit
                 KeyCode::KeyX => return Some(EditorCommand::Cut),
                 KeyCode::KeyV => return Some(EditorCommand::Paste),
                 KeyCode::KeyA => return Some(EditorCommand::SelectAll),
+                KeyCode::Comma => return Some(EditorCommand::OpenSettings),
+                KeyCode::KeyB => return Some(EditorCommand::ToggleSidebar),
+                KeyCode::KeyP => return Some(EditorCommand::ToggleQuickOpen),
+                KeyCode::KeyE if modifiers.shift_key() => return Some(EditorCommand::FocusSidebar),
+                KeyCode::KeyQ => return Some(EditorCommand::Quit),
                 KeyCode::Home => {
                     return Some(EditorCommand::ApplyCursorMotion {
                         motion: editor_core::CursorMotion::BufferStart,
@@ -83,10 +127,7 @@ pub fn map_key_event(event: &KeyEvent, modifiers: ModifiersState) -> Option<Edit
         }
 
         if matches!(code, KeyCode::Escape) {
-            return Some(EditorCommand::Quit);
-        }
-        if matches!(code, KeyCode::F11) {
-            return Some(EditorCommand::ToggleDevHud);
+            return Some(EditorCommand::Cancel);
         }
 
         if wm {
@@ -161,15 +202,14 @@ pub fn map_key_event(event: &KeyEvent, modifiers: ModifiersState) -> Option<Edit
     }
 
     // Typed characters (layout-aware); skip when chorded with primary/ctrl/super.
-    if let Some(t) = event.text.as_ref() {
+    if let Some(t) = text {
         if t.is_empty() || pm || modifiers.control_key() || modifiers.super_key() {
             return None;
         }
-        let s = t.as_str();
-        if s == "\r" || s == "\n" || s == "\u{7f}" {
+        if t == "\r" || t == "\n" || t == "\u{7f}" {
             return None;
         }
-        if s.chars().all(|c| c.is_control()) {
+        if t.chars().all(|c| c.is_control()) {
             return None;
         }
         return Some(EditorCommand::InsertText(t.to_string()));

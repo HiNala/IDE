@@ -15,6 +15,12 @@ pub struct JobToken {
 }
 
 impl JobToken {
+    /// Token for work running outside [`WorkerPool`] (e.g. dedicated search thread).
+    #[must_use]
+    pub fn new_detached() -> Self {
+        Self { cancelled: Arc::new(AtomicBool::new(false)) }
+    }
+
     /// Request cooperative cancellation.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
@@ -113,5 +119,16 @@ mod tests {
         });
         assert!(rx.recv().expect("result"));
         drop(tok);
+    }
+
+    #[test]
+    fn pool_runs_many_jobs_sequentially() {
+        let pool = WorkerPool::new(Some(2));
+        let mut sum = 0u32;
+        for i in 0..100 {
+            let (_tok, rx) = pool.spawn(move |_t| i);
+            sum = sum.wrapping_add(rx.recv().expect("job"));
+        }
+        assert_eq!(sum, 4950);
     }
 }

@@ -60,6 +60,12 @@ impl TextBufferSnapshot {
     pub const fn version(&self) -> u64 {
         self.version
     }
+
+    /// Read-only render snapshot (e.g. git diff preview). `version` is `0`.
+    #[must_use]
+    pub fn from_rope_for_render(rope: Rope) -> Self {
+        Self { rope, version: 0 }
+    }
 }
 
 /// UTF-8 text document stored as a rope. Internal newlines are always `'\n'`;

@@ -1,6 +1,7 @@
 //! Rolling frame timings + optional RSS sampling (M07 observability).
 
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 /// Single heap sample from the OS (best-effort).
@@ -22,6 +23,7 @@ pub struct MetricsSnapshot {
 }
 
 /// Rolling window of recent frame timings (default 120 frames).
+#[derive(Debug)]
 pub struct MetricsCollector {
     frame_times: VecDeque<Duration>,
     prepare_times: VecDeque<Duration>,
@@ -103,12 +105,20 @@ impl MetricsCollector {
         }
     }
 
-    /// One-line overlay for the dev HUD (F11).
     #[must_use]
     pub fn hud_line(&self) -> String {
+        let mut out = String::new();
+        self.write_hud_line(&mut out);
+        out
+    }
+
+    /// Formats the dev HUD line into `out` (reuses capacity; clears first).
+    pub fn write_hud_line(&self, out: &mut String) {
+        out.clear();
         let s = self.snapshot();
         let mb = s.last_heap.map(|h| h.resident_bytes as f64 / (1024.0 * 1024.0)).unwrap_or(0.0);
-        format!(
+        let _ = write!(
+            out,
             "p50 {:.1}ms p95 {:.1}ms p99 {:.1}ms | {:.0} fps | prep {:.1}ms gpu {:.1}ms | rss {:.1}MB",
             s.p50_frame.as_secs_f64() * 1000.0,
             s.p95_frame.as_secs_f64() * 1000.0,
@@ -117,7 +127,7 @@ impl MetricsCollector {
             s.last_prepare.as_secs_f64() * 1000.0,
             s.last_submit.as_secs_f64() * 1000.0,
             mb,
-        )
+        );
     }
 }
 

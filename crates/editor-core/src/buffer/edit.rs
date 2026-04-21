@@ -1,41 +1,46 @@
-//! Reversible edit operations.
+//! Incremental text edits ([`Edit`], [`EditKind`]) for undo and [`super::TextBuffer::apply_edit`].
 
 use std::ops::Range;
 
-use super::TextBuffer;
 use crate::position::BytePos;
-use crate::CoreResult;
+use crate::{CoreError, CoreResult};
 
-/// Kind of text change (insert or delete).
-#[derive(Debug, Clone, PartialEq, Eq)]
+use super::TextBuffer;
+
+/// High-level edit operation (before sequence assignment).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditKind {
-    /// Insert `text` at `pos` (byte offset, on a UTF-8 boundary).
-    Insert {
-        /// Insertion point.
-        pos: BytePos,
-        /// Text to insert.
-        text: String,
-    },
-    /// Delete `range`; `deleted_text` must match buffer contents when applied.
-    Delete {
-        /// Byte range to remove (on UTF-8 boundaries).
-        range: Range<BytePos>,
-        /// Text that was / will be removed (for redo and inverse).
-        deleted_text: String,
-    },
+    Insert { pos: BytePos, text: String },
+    Delete { range: Range<BytePos>, deleted_text: String },
 }
 
-/// One applied edit with a monotonic sequence number from [`super::TextBuffer`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One applied edit with monotonic sequence from the buffer.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Edit {
-    /// Edit payload.
     pub kind: EditKind,
-    /// Sequence number assigned by the buffer.
     pub seq: u64,
 }
 
 impl Edit {
-    /// Apply this edit to `buffer`. Fails if offsets or `deleted_text` do not match the buffer.
+    /// Inverse edit (undo applies this to revert `self`).
+    #[must_use]
+    pub fn inverse(&self) -> Edit {
+        match &self.kind {
+            EditKind::Insert { pos, text } => {
+                let end = BytePos(pos.0 + text.len());
+                Edit {
+                    kind: EditKind::Delete { range: *pos..end, deleted_text: text.clone() },
+                    seq: self.seq,
+                }
+            }
+            EditKind::Delete { range, deleted_text } => Edit {
+                kind: EditKind::Insert { pos: range.start, text: deleted_text.clone() },
+                seq: self.seq,
+            },
+        }
+    }
+
+    /// Apply this edit to `buffer` (same effect as the original `apply_edit` step).
     pub fn apply(&self, buffer: &mut TextBuffer) -> CoreResult<()> {
         match &self.kind {
             EditKind::Insert { pos, text } => buffer.insert(*pos, text),
@@ -43,7 +48,7 @@ impl Edit {
                 let actual = buffer.delete_range(range.clone())?;
                 if actual != *deleted_text {
                     buffer.insert(range.start, &actual)?;
-                    return Err(crate::CoreError::InvalidRange {
+                    return Err(CoreError::InvalidRange {
                         start: range.start.0,
                         end: range.end.0,
                         len: buffer.len_bytes(),
@@ -52,20 +57,5 @@ impl Edit {
                 Ok(())
             }
         }
-    }
-
-    /// Inverse edit that undoes `self` when applied.
-    #[must_use]
-    pub fn inverse(&self) -> Self {
-        let kind = match &self.kind {
-            EditKind::Insert { pos, text } => EditKind::Delete {
-                range: *pos..BytePos(pos.0 + text.len()),
-                deleted_text: text.clone(),
-            },
-            EditKind::Delete { range, deleted_text } => {
-                EditKind::Insert { pos: range.start, text: deleted_text.clone() }
-            }
-        };
-        Self { kind, seq: self.seq }
     }
 }

@@ -4,11 +4,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use editor_core::{ScrollOffset, TextBufferSnapshot};
+use editor_diff::DiffPaint;
 use editor_ui::{StatusBarInfo, StatusBarLayout};
 use wgpu::Color;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
+use crate::diff_layout;
 use crate::error::RenderError;
 use crate::gpu::GpuContext;
 use crate::selection_layout;
@@ -38,6 +40,19 @@ pub struct FrameInput<'a> {
     pub dev_hud_line: Option<String>,
     /// UTF-8 byte range `[lo, hi)` to highlight (non-empty selections). `None` skips quads.
     pub selection_byte_range: Option<(usize, usize)>,
+    /// Inline diff tint quads (M17/M18). `None` skips diff overlays.
+    pub diff: Option<DiffPaint<'a>>,
+    /// Height reserved at the bottom for the integrated terminal (M26). `0.0` hides the pane.
+    pub terminal_pane_height_px: f32,
+    /// Pre-shaped terminal grid (PTY + alacritty). `None` when the pane is hidden or not ready.
+    pub terminal_snapshot: Option<editor_terminal::TerminalRenderSnapshot>,
+    /// When set, replaces the document view with a full-window settings overlay (M28).
+    pub settings_overlay_lines: Option<&'a [String]>,
+    /// Sidebar / tab strip / quick-open quads + text (M14). Drawn above the editor body text.
+    pub frame_chrome: Option<&'a editor_ui::FrameChrome>,
+    /// M14: shift document text + selection insets (physical px). Zero when chrome is off.
+    pub content_inset_left_px: f32,
+    pub content_inset_top_px: f32,
 }
 
 /// CPU/GPU split for one presented frame (M07).
@@ -53,6 +68,8 @@ pub struct EditorRenderer {
     gpu: GpuContext,
     text: TextLayer,
     solid: SolidQuadLayer,
+    /// Reused allocation for selection quads (avoid per-frame `Vec` churn).
+    selection_rect_scratch: Vec<(f32, f32, f32, f32, [f32; 4])>,
 }
 
 impl std::fmt::Debug for EditorRenderer {
@@ -68,7 +85,7 @@ impl EditorRenderer {
         let format = gpu.surface_format();
         let text = TextLayer::new(gpu.device(), gpu.queue(), format);
         let solid = SolidQuadLayer::new(gpu.device(), format);
-        Ok(Self { gpu, text, solid })
+        Ok(Self { gpu, text, solid, selection_rect_scratch: Vec::new() })
     }
 
     /// Swapchain resize (window size / DPI).
@@ -91,7 +108,7 @@ impl EditorRenderer {
     pub fn render_frame(&mut self, input: &FrameInput<'_>) -> Result<FrameTimings, RenderError> {
         let frame_start = Instant::now();
         self.text.set_scale_factor(input.scale_factor);
-        let EditorRenderer { gpu, text, solid } = self;
+        let EditorRenderer { gpu, text, solid, selection_rect_scratch } = self;
         let status_bar =
             input.status.as_ref().map(|s| StatusBarLayout::from_info(s, input.scale_factor));
         let dev_hud = input.dev_hud_line.as_deref();
@@ -101,28 +118,57 @@ impl EditorRenderer {
         let (gutter_w, char_w) =
             crate::text_layer::compute_gutter_width_px(total_lines, input.scale_factor);
         let line_h = text.line_height_px();
-        let rects = if let Some((a, b)) = input.selection_byte_range {
-            selection_layout::selection_rects_pixels(
+        selection_rect_scratch.clear();
+        let term_h = input.terminal_pane_height_px.max(0.0);
+        if let Some((a, b)) = input.selection_byte_range {
+            selection_layout::selection_rects_pixels_into(
+                selection_rect_scratch,
                 rope,
                 a,
                 b,
                 input.scroll,
                 input.physical_size,
                 status_h,
+                term_h,
                 line_h,
                 gutter_w,
                 char_w,
-            )
-        } else {
-            Vec::new()
-        };
+                input.content_inset_left_px,
+                input.content_inset_top_px,
+            );
+        }
+        if let Some(diff) = input.diff {
+            diff_layout::inline_diff_quads_into(
+                selection_rect_scratch,
+                rope,
+                diff.lines,
+                input.scroll,
+                input.physical_size,
+                status_h,
+                term_h,
+                line_h,
+                gutter_w,
+                char_w,
+                input.content_inset_left_px,
+                input.content_inset_top_px,
+            );
+        }
+        if let Some(fc) = input.frame_chrome {
+            for q in &fc.quads {
+                let l = q.left;
+                let t = q.top;
+                let r = q.left + q.width;
+                let b = q.top + q.height;
+                selection_rect_scratch.push((l, t, r, b, q.rgba));
+            }
+        }
         let t_prep = Instant::now();
         solid.prepare(
             gpu.device(),
             gpu.queue(),
             input.physical_size.width,
             input.physical_size.height,
-            &rects,
+            selection_rect_scratch.as_slice(),
         );
         text.prepare(
             gpu.device(),
@@ -134,6 +180,12 @@ impl EditorRenderer {
             input.cursor_blink_on,
             status_bar.as_ref(),
             dev_hud,
+            term_h,
+            input.terminal_snapshot.as_ref(),
+            input.settings_overlay_lines,
+            input.frame_chrome,
+            input.content_inset_left_px,
+            input.content_inset_top_px,
         )?;
         let prepare = t_prep.elapsed();
 
@@ -204,5 +256,12 @@ impl EditorRenderer {
     #[must_use]
     pub fn line_height_px(&self) -> f32 {
         self.text.line_height_px()
+    }
+
+    /// Row scratch capacity after [`Self::render_frame`] pre-warm (integration tests; M12).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_visible_row_slot_count(&self) -> usize {
+        self.text.test_visible_row_slot_count_for_tests()
     }
 }

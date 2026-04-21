@@ -19,7 +19,9 @@ workspace = true
 
 [dependencies]
 editor-core         = { path = "../editor-core" }
+editor-diff         = { path = "../editor-diff" }
 editor-ui           = { path = "../editor-ui" }
+editor-terminal     = { path = "../editor-terminal" }
 ropey               = { workspace = true }
 wgpu                = { workspace = true }
 winit               = { workspace = true }
@@ -28,12 +30,22 @@ bytemuck            = { workspace = true }
 pollster            = { workspace = true }
 thiserror           = { workspace = true }
 tracing             = { workspace = true }
+static_assertions   = "1"
 glyphon             = "0.11.0"
 cosmic-text         = "0.18.2"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name    = "frame_overhead"
+harness = false
+
+[[bench]]
+name    = "text_layer_prepare"
+harness = false
 
 [features]
 default = ["dev-hud"]
 # Developer HUD string formatting (full GPU text overlay needs M04 text layer).
 dev-hud = []
-
-[dev-dependencies]
