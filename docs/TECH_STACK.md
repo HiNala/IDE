@@ -52,7 +52,7 @@ narrowest sensible abstraction.
 | Crate | Locked Version | Rationale |
 |---|---|---|
 | [`ropey`](https://docs.rs/ropey) | `1` (stable line; `2.0-beta` not yet adopted) | Mature rope implementation with excellent performance characteristics; used by Helix. Considered alternatives: `crop`, `xi-rope` — ropey wins on ergonomics and test coverage. We pin to the `1.x` stable line; `2.0` is still in beta as of M01. |
-| [`cosmic-text`](https://docs.rs/cosmic-text) | pinned at M04 adoption | High-quality shaping + layout with system-font discovery; drives `glyphon`. Version chosen to match `glyphon` at M04. |
+| [`cosmic-text`](https://docs.rs/cosmic-text) | `0.18` (aligned with `glyphon` 0.11) | High-quality shaping + layout with system-font discovery; drives `glyphon`. |
 | [`glyphon`](https://docs.rs/glyphon) | `0.11` | GPU glyph-atlas renderer sitting on top of `cosmic-text` and `wgpu`. Current stable (April 2026). |
 | [`unicode-segmentation`](https://docs.rs/unicode-segmentation) | `1.11` | Grapheme-correct cursor movement and selection. |
 | [`unicode-width`](https://docs.rs/unicode-width) | `0.1` | Column width computation for tab stops, status bar alignment. |

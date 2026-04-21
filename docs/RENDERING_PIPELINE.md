@@ -40,34 +40,70 @@ editor-core  ──(RenderSnapshot)──▶  editor-render
 
 ## 3. Backend Selection
 
-`wgpu::InstanceDescriptor`:
+`crates/editor-render/src/backend.rs` sets [`wgpu::Instance::new`]’s
+`InstanceDescriptor.backends` bitmask:
 
-- Windows: prefer DX12, fall back to Vulkan, then GL.
-- Linux: Vulkan preferred, GL fallback.
-- macOS: Metal only.
+- **Windows:** `DX12 | VULKAN | GL` (DirectX 12 first when available).
+- **Linux / BSD:** `VULKAN | GL`.
+- **macOS:** `METAL`.
 
-Logic lives in one `editor-render` function so it is testable in
-isolation. Backend choice is logged at startup via `tracing::info!`.
+If `WGPU_BACKEND` is set in the environment, that value **replaces** the
+platform default (see [`wgpu::Backends::from_env`]).
 
-## 4. Surface & Present Mode
+Startup logs the chosen adapter at `info!` with backend name, vendor id,
+`DeviceType`, and driver strings from [`wgpu::AdapterInfo`].
 
-Surface format: `Bgra8UnormSrgb` preferred; fall back to whatever the
-adapter reports if that's unavailable.
+## 3a. Present mode and power
 
-Present mode ranking:
+- **`IDE_PRESENT_MODE`** — optional override: `immediate`, `fifo`, `fifo_relaxed`, or
+  `mailbox` (must be listed in the surface’s `present_modes`; otherwise we fall back
+  to the automatic order below).
+- **`IDE_POWER_PREFERENCE`** — `low` tries low-power adapters before discrete; default
+  order prefers high performance (discrete when available), then low-power,
+  each with `force_fallback_adapter` false then true (CPU / SwiftShader / llvmpipe paths).
 
-1. `Mailbox` — preferred on DX12 / Vulkan / Metal for low-latency.
-2. `Fifo` — safe fallback (always supported).
-3. `Immediate` — only if explicitly enabled (`--present-immediate`); may
-   tear.
+Without `IDE_PRESENT_MODE`, present mode follows monitor refresh (see §5).
 
-Re-configure the surface on:
+## 4. Frame interval statistics (M03)
 
-- `WindowEvent::Resized` (use inner size).
-- `WindowEvent::ScaleFactorChanged`.
-- Backend change (never at runtime in MVP).
+[`editor_render::FrameTimer`] records wall-clock deltas between successive
+`EditorRenderer::render_frame` calls (rolling window of 120 samples). Values are
+available via [`EditorRenderer::frame_timer`] and logged at `tracing::debug!`
+as `editor-render: frame interval`. Exceeding ~16 ms in debug (50 ms in release)
+emits a warning — early performance feedback before the dev HUD (M07).
 
-## 5. Glyph Atlas via `glyphon`
+## 5. Surface & Present Mode
+
+Surface format: prefer an sRGB-capable format from the surface caps (see
+`GpuContext::new` in `editor-render`).
+
+**Present mode (M12)** — chosen from the surface’s supported modes using the
+monitor’s `refresh_rate_millihertz()` (~60 Hz vs ≥120 Hz):
+
+- **≥120 Hz:** prefer `Mailbox`, then `FifoRelaxed`, `Fifo`, `Immediate`.
+- **\<120 Hz or unknown:** prefer `FifoRelaxed`, then `Fifo`, `Mailbox`, `Immediate`.
+
+When the window moves to another display (`Moved`, or resize/DPI), we call
+`sync_present_mode_for_window` so vsync tracks the new monitor.
+
+Re-configure the surface (`GpuContext::resize`) on:
+
+- `WindowEvent::Resized` (inner physical size; skip 0×0).
+- `WindowEvent::ScaleFactorChanged` (often paired with resize).
+
+The swapchain image size tracks the window; the driver reallocates swapchain
+storage on `surface.configure`. **Application-owned** resources sized for the
+viewport are pooled so resize does not churn Rust-side allocations:
+
+- **Solid quads:** one vertex buffer sized for a fixed maximum rectangle count.
+- **Text row scratch:** `TextLayer` pre-grows cosmic-text line buffers and shape-cache
+  `Vec`s to `MAX_VISIBLE_ROW_SLOTS` (320 rows — 8K-class height at typical line metrics);
+  see `crates/editor-render/src/text_layer.rs`.
+
+A dedicated **8K-class** offscreen *color* attachment for a render-to-texture pass is
+*not* used (we draw directly to the swapchain); follow `FOLLOWUPS.md` if that changes.
+
+## 6. Glyph Atlas via `glyphon`
 
 We delegate atlas management to `glyphon` to avoid rebuilding a known
 hard problem:
@@ -82,19 +118,31 @@ Atlas size cap: 64 MiB GPU-resident (see `PERFORMANCE_BUDGETS.md`).
 One atlas per window, shared across all text regions (text canvas, gutter,
 status bar).
 
-## 6. Layout Strategy
+### Default font (M04)
 
-- **Per-line `cosmic_text::Buffer`** for the main canvas, lazily created
-  and cached by (`line_index`, `document_version`) tuple.
-- **Viewport clipping:** only lines whose visible range intersects the
-  viewport are shaped.
-- **Dirty-line invalidation:** `editor-core` reports a `RangeSet<LineIdx>`
-  of changed lines each frame; their cached `Buffer`s are discarded.
-- **Wrap mode:** in MVP, wrap disabled (long lines horizontally scroll or
-  clip). Wrap is a deliberate V2+ concern because it complicates row-col
-  math.
+The primary monospace face is **JetBrains Mono Regular** (`Apache-2.0`), shipped as
+`crates/editor-render/assets/fonts/JetBrainsMono-Regular.ttf` with
+`LICENSE_JETBRAINS.txt`, embedded at compile time via `include_bytes!`.
 
-## 7. Frame Anatomy
+`FontSystem::db_mut().load_system_fonts()` runs after loading the bundled font so
+cosmic-text can fall back to installed fonts when a codepoint is missing from the
+bundle (emoji, CJK, etc.). Tofu appears only when no fallback covers the glyph.
+
+## 7. Layout Strategy
+
+- **Per-line `cosmic_text::Buffer`** for the main canvas, cached by a shape key
+  that includes `line_index`, document version, **layout width** (for non-wrapped
+  mode we use a large fixed width so **horizontal resize does not reshaping**),
+  and scale bits.
+- **Viewport clipping:** only visible rows are prepared each frame; vertical
+  scroll changes which line indices are visible.
+- **Dirty-line invalidation:** buffer edits bump the document version and
+  invalidate affected cache slots.
+- **Wrap mode:** long lines use a fixed large layout width (no soft wrap to the
+  viewport width), so resize is cheap; true soft wrap is out of scope until a
+  later milestone.
+
+## 8. Frame Anatomy
 
 ```
 1. Receive RenderSnapshot from editor-core (via arc-swap).
@@ -123,7 +171,7 @@ status bar).
   re-layout needed.
 - Position derived from `cursor_byte` via the shared rope.
 
-## 9. Selection Rendering (V2)
+## 10. Selection Rendering (V2)
 
 - Split into **per-visible-line rectangles**.
 - Instanced draw: one instance per line fragment, one vertex buffer.
@@ -132,7 +180,7 @@ status bar).
 Never generate a rectangle per character. Per-visible-line is the upper
 bound.
 
-## 10. Line Numbers (V2)
+## 11. Line Numbers (V2)
 
 - Separate `glyphon::TextRenderer` pass into a dedicated atlas region or
   its own small atlas.
@@ -155,7 +203,7 @@ bound.
 On multi-monitor systems with differing DPI, a drag between monitors
 triggers `ScaleFactorChanged` and we follow the pipeline above.
 
-## 12. Failure Modes & Fallbacks
+## 13. Failure Modes & Fallbacks
 
 - **Adapter request fails.** Retry with power-preference `LowPower`.
   If that fails, exit with a clear error message on stderr.
@@ -179,7 +227,7 @@ Per-frame rendering benchmarks use `criterion` with a canned
 `RenderSnapshot` and a `wgpu::Backends::empty()` (software) where
 available.
 
-## 14. Future
+## 15. Future
 
 - Subpixel text anti-aliasing quality tuning.
 - Frame-pacing for 120 Hz displays with explicit vertical blanking
@@ -193,7 +241,21 @@ screen, not document size.**
 
 ---
 
-*Last updated: M00.*
+*Last updated: M12 (present policy + layout cache notes).*
+
+## M12 — Resize / DPI / frame pacing (summary)
+
+- **Paint on `Resized` / `ScaleFactorChanged`:** the shell calls `paint_frame`
+  immediately (interactive path), not only on `RedrawRequested`, so Windows
+  **modal resize** keeps updating the client area during edge drag.
+- **Battery:** when the `battery` crate reports discharging and the display is
+  high-refresh, optional **~60 fps** cap on *normal* redraws (`state.json`:
+  `power_uncap_on_battery` to opt out). Interactive resize/DPI paints are not
+  throttled.
+- **First frame:** the window stays hidden until after the first successful
+  `present`, reducing startup flash.
+
+---
 
 ## Mission M00 reference appendix (auto-expanded)
 

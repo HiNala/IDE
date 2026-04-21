@@ -1,4 +1,4 @@
-[← docs/](./) · [README](../README.md)
+﻿[ΓåÉ docs/](./) ┬╖ [README](../README.md)
 
 # Rust conventions
 
@@ -37,7 +37,7 @@ table in the root `Cargo.toml`.
 
 ## 4. Errors
 
-- Library crates (`editor-core`, `editor-render`, …): use `thiserror` enums
+- Library crates (`editor-core`, `editor-render`, ΓÇª): use `thiserror` enums
   with structured fields; expose `Result<T, CrateError>` aliases.
 - Binary crate (`editor-app`): may use `anyhow::Result` at the boundary for
   top-level error reporting; convert structured errors to messages with context.
@@ -51,12 +51,24 @@ table in the root `Cargo.toml`.
   where it clarifies profiling (M07+).
 - Avoid `println!` in code paths that ship to users.
 
+**Level convention (M07)**
+
+| Level | Typical use |
+|-------|-------------|
+| `trace!` | Hot-path detail (per-edit, motion); default filters keep this off. |
+| `debug!` | Frame loop, subsystem transitions, periodic metric snapshots. |
+| `info!` | Startup/shutdown, file load/save completion, workspace ready. |
+| `warn!` | Recoverable issues: glyph atlas retry, frame budget overruns, disk change hints. |
+| `error!` | Non-fatal failures where the app keeps running (I/O, GPU recoverable errors). |
+
+**Tracy (optional):** build `editor-app` with `--features tracy`, run the Tracy Viewer, connect to the process for span timelines — see [`PERFORMANCE_BUDGETS.md`](PERFORMANCE_BUDGETS.md).
+
 ## 6. Modules
 
 - Prefer `lib.rs` / `main.rs` as crate roots; avoid deep `mod.rs` trees unless
   the module is genuinely a directory of related files.
 - One primary type per file when practical; keep names aligned with the
-  architecture doc (`GpuContext`, `CoreError`, …).
+  architecture doc (`GpuContext`, `CoreError`, ΓÇª).
 
 ## 7. Documentation
 

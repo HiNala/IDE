@@ -6,6 +6,12 @@ The text engine lives in the `editor-core` crate. It is a pure-Rust
 library with no GPU, OS, or async dependencies. Everything here is
 implemented during M02.
 
+## 0. Where to look
+
+- **API index:** [`API_DESIGN_NOTES.md`](API_DESIGN_NOTES.md) links rustdoc and mission context.
+- **Property tests:** `crates/editor-core/tests/proptest_*.rs` use `proptest` with **256 cases** per macro block (M02 gate).
+- **Benchmarks:** `crates/editor-core/benches/rope_benches.rs` — run `cargo bench -p editor-core`; optional baseline: `--save-baseline m02-mvp`.
+
 ## 1. Responsibilities
 
 - **Store** the current document as a rope-based buffer.
@@ -19,25 +25,37 @@ implemented during M02.
 The engine does **not** own the file path, the view, or any I/O. Those
 belong to `editor-io` and `editor-app`.
 
-## 2. Core Types
+**Line-ending contract with `editor-io`:** On load, `editor-io` detects
+`LineEnding`, normalizes content to LF for the rope (via
+`TextBuffer::with_line_ending`), and stores the original convention for save.
+On save, the I/O layer expands LF back to CRLF/CR when required without
+mutating the rope. `LoadedFile` exposes `line_ending` alongside the buffer for
+callers that need it without touching the rope.
+
+## 2. Core Types (as implemented in `editor-core`)
+
+The app holds **separate** `TextBuffer`, `Cursor`, `Selection`, and
+`UndoStack` (not a single `Document` struct). Public types:
 
 ```text
-Document
-├── rope:       ropey::Rope              (content, always LF-internal)
-├── line_ends:  LineEndingKind           (LF | CRLF | CR, detected on load)
-├── cursor:     Cursor                   (primary caret)
-├── selection:  Option<Selection>        (V2; anchor + head)
-├── history:    History                  (undo/redo stack)
-├── dirty_lines: RangeSet<LineIdx>       (invalidated since last layout)
-└── version:    u64                      (monotonic edit counter)
+TextBuffer
+├── rope:                   ropey::Rope        (LF-internal)
+├── original_line_ending:   LineEnding         (detected on load; preserved on save via I/O layer)
+├── version:                u64                (bumps on each successful edit)
+└── next_edit_seq:          u64                (assigns Edit.seq)
 
-Cursor { byte_offset: usize }
-Selection { anchor: Cursor, head: Cursor }
+TextBufferSnapshot         { rope, version }  (cheap clone for workers / render)
+
+Cursor                       { pos: BytePos, preferred_col }
+Selection                    { anchor: BytePos, head: BytePos }
+Edit / EditKind              (insert / delete + inverse)
+UndoStack                    (bounded history + future; insert coalescing)
+BytePos, LineCol             (byte-centric; column = UTF-8 bytes within line)
 ```
 
-All offsets are **byte offsets into the internal (LF-normalized)
-representation**. Row/column are derived on demand from the rope's line
-index.
+All offsets are **byte offsets** into the internal (LF-normalized) string.
+Row/column for the status bar come from [`TextBuffer::byte_to_line_col`] /
+[`TextBuffer::line_col_to_byte`].
 
 ### Byte vs. Char vs. Grapheme
 
@@ -67,120 +85,65 @@ If profiling ever shows ropey as a bottleneck, the replacement strategy is
 documented in `RISKS.md`: fork ropey behind an internal `TextBuf`
 trait we already use.
 
-## 4. API Sketch (Stable by End of M02)
+## 4. Public API Surface (`editor-core`)
 
-```rust
-pub struct Document { /* ... */ }
+Entry points (see rustdoc on each symbol for full signatures):
 
-impl Document {
-    pub fn from_str(contents: &str) -> Self;
-    pub fn insert(&mut self, at: usize, text: &str) -> EditId;
-    pub fn delete(&mut self, range: Range<usize>) -> EditId;
+| Area | Types / methods |
+|------|------------------|
+| Buffer | `TextBuffer::new`, `from_str`, `apply_edit`, `insert`, `delete_range`, `len_bytes`, `len_lines`, `line`, `byte_to_line_col`, `line_col_to_byte`, `is_char_boundary`, `slice_to_string`, `snapshot`, `to_text` |
+| Edits | `EditKind::{Insert, Delete}`, `Edit::apply`, `Edit::inverse` |
+| Cursor | `Cursor::new`, `apply` with `CursorMotion` (grapheme-aware L/R; `WordLeft`/`WordRight`; vertical moves use `preferred_col`) |
+| Selection | `Selection::empty`, `range`, `extend_to`, `collapse_to_head` / `collapse_to_anchor` |
+| Undo | `UndoStack::new` / `Default`, `push`, `undo`, `redo`, `checkpoint` |
+| Line endings | `LineEnding::detect`, `normalize_to`, `as_str` (on-disk newline token) |
 
-    pub fn len_bytes(&self) -> usize;
-    pub fn len_chars(&self) -> usize;
-    pub fn len_lines(&self) -> usize;
-
-    pub fn line(&self, idx: usize) -> Option<RopeSlice<'_>>;
-    pub fn byte_to_line(&self, byte: usize) -> usize;
-    pub fn line_to_byte(&self, line: usize) -> usize;
-
-    pub fn cursor(&self) -> Cursor;
-    pub fn move_cursor(&mut self, motion: Motion);
-
-    pub fn undo(&mut self) -> Option<EditId>;
-    pub fn redo(&mut self) -> Option<EditId>;
-
-    pub fn version(&self) -> u64;
-    pub fn take_dirty_lines(&mut self) -> RangeSet<LineIdx>;
-}
-
-pub enum Motion {
-    Left, Right, Up, Down,
-    LineStart, LineEnd,
-    DocStart, DocEnd,
-    PageUp(usize), PageDown(usize),
-    // V2:
-    WordLeft, WordRight,
-}
-```
-
-The exact shapes may evolve; changes are committed in M02 alongside their
-tests.
+`editor-app` wires these together; **`TextBuffer` does not embed** `Cursor` or
+`UndoStack` — higher layers own them, matching the mission handoff.
 
 ## 5. Undo / Redo Model
 
-- Reversible `Edit` records: `Insert { at, text }` and `Delete { at, text }`.
-- Each edit stores exactly enough data to reverse itself.
-- `History` is a bounded stack (default 1000 records or 64 MiB, whichever
-  hits first) with LRU-eviction from the oldest end.
-- **Coalescing:** typing successive characters inside a single word within
-  a short time window (default 500 ms) merges into one record. Explicit
-  caret motion breaks coalescing.
-- **Milestones:** saving a file, opening a new file, or running a big
-  multi-cursor action compacts the history into a single checkpoint.
-
-History never retains full rope snapshots. It stores only enough text to
-invert operations.
+- Reversible `Edit` / `EditKind` records: `Insert { pos, text }` and
+  `Delete { range, deleted_text }`; `Edit::inverse` rebuilds the partner op.
+- `UndoStack` holds `history` and `future` vectors; capacity is configurable
+  (see `UndoStack::new` / `Default`).
+- **Coalescing:** adjacent single-character inserts within a time window merge
+  (`std::time::Instant` + `Duration`); `UndoStack::checkpoint` clears the
+  coalesce latch (call on caret moves, etc., from the app).
+- History stores **edit records only**, not full rope snapshots.
 
 ## 6. Line Endings
 
-- At load (`editor-io::load_file`), sniff the first 64 KiB; choose the
-  majority ending; store `LineEndingKind` on the `Document`.
-- Normalize to `\n` for internal storage.
-- At save, re-emit the original kind unless the user explicitly requested
-  conversion (not an MVP feature).
+- `LineEnding::detect` scans loaded text (see `buffer/line_ending.rs` for rules).
+- `TextBuffer::from_str` normalizes content to LF internally and stores
+  `original_line_ending` (getter: `TextBuffer::original_line_ending()`).
+- At save, `editor-io` writes bytes using that convention (see M06).
 
 ## 7. Concurrency & Ownership
 
-The `Document` is `Send` but not `Sync`. It lives on the main thread and
-is mutated synchronously. Render-side snapshots are produced via:
-
-```rust
-pub struct RenderSnapshot {
-    pub version: u64,
-    pub rope: Arc<ropey::Rope>,       // shared immutable rope
-    pub visible_lines: Range<usize>,
-    pub cursor_byte: usize,
-    // ...
-}
-```
-
-Snapshots are cheap to produce because `ropey::Rope` implements
-structural sharing. `arc-swap` publishes the latest snapshot to the render
-thread/task without locks.
-
-Details: `CONCURRENCY.md`.
+`TextBuffer` and `UndoStack` are used on the **main** editing thread. Background
+workers receive `TextBufferSnapshot` (cheap `Rope` clone + `version`) for
+save/load and similar work. The render crate reads snapshots passed per frame
+from `editor-app` — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 8. Determinism
 
-Given the same input stream, `Document` produces the same state and the
-same dirty-line set every run. This is essential for:
-
-- Reproducible tests (`proptest` replays).
-- Benchmark stability.
-- Future deterministic replay of editing sessions.
-
-We avoid hash-map iteration order in any code that affects observable
-state.
+Given the same edit stream, `TextBuffer` and `UndoStack` produce the same
+state. This supports reproducible tests (`proptest` replays), benchmark
+stability, and future deterministic replay. Avoid hash-map iteration order in
+any code that affects observable state.
 
 ## 9. Tests
 
-Per `TESTING_STRATEGY.md`, M02 ships with:
+Implemented in the `editor-core` crate:
 
-- Unit tests for every public API.
-- `proptest` tests:
-  - random insert/delete sequences preserve `len_bytes == rope.len_bytes()`;
-  - undo(redo(x)) == x for any edit sequence;
-  - `byte_to_line` and `line_to_byte` round-trip for every byte offset;
-  - grapheme-aware cursor motion never lands mid-cluster.
-- Criterion benchmarks:
-  - Insert 1 char at head / middle / tail of 1 MiB / 10 MiB / 100 MiB.
-  - Delete 1 MiB block.
-  - 1 M line-index lookups.
-  - Undo-redo round-trip of 10k edits.
+| Kind | Location |
+|------|-----------|
+| Unit / integration | `src/**/*.rs` (`#[cfg(test)]`, `buffer`, `cursor`, `selection`, `undo`, …) |
+| Proptest | [`crates/editor-core/tests/proptest_rope_invariants.rs`](<../../crates/editor-core/tests/proptest_rope_invariants.rs>), [`edits_proptest.rs`](<../../crates/editor-core/tests/edits_proptest.rs>) |
+| Criterion | [`crates/editor-core/benches/rope_benches.rs`](<../../crates/editor-core/benches/rope_benches.rs>) (`harness = false`) |
 
-Targets: all per-edit ops < 50 µs on 100 MiB documents on the dev box.
+Performance targets: [`PERFORMANCE_BUDGETS.md`](PERFORMANCE_BUDGETS.md).
 
 ## 10. Future Extensions (Not M02)
 
@@ -195,7 +158,7 @@ All are explicitly out of MVP scope.
 
 ---
 
-*Last updated: M00.*
+*Last updated: 2026-04-20 — aligned with implemented `editor-core` API.*
 
 ## Mission M00 reference appendix (auto-expanded)
 

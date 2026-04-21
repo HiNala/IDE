@@ -2,42 +2,32 @@
 
 # Current status
 
-**Last updated:** 2026-04-20
+**Last updated:** 2026-04-22
 
 ## Mission progress
 
 | Range | State | Evidence |
 |--------|--------|----------|
-| **M00–M06** | **Done** | Text engine, GPU text, async file I/O — see [`MISSION_IMPLEMENTATION_STATUS.md`](MISSION_IMPLEMENTATION_STATUS.md). |
-| **M07–M08** | **Partial** | Metrics HUD + `gpu_resize_stress` test; full PRD **Measured** columns in [`MVP_ACCEPTANCE.md`](MVP_ACCEPTANCE.md) still mostly manual/bench. |
-| **M09–M10** | **Done (code)** | Gutter, selection, clipboard, undo, status bar, `state.json`, word navigation. Release tagging / formal V2 sign-off tracked in acceptance docs. |
-| **M11** | **Partial** | Semver tag workflow builds MSI / DMG / deb / AppImage + checksums ([`release.yml`](../.github/workflows/release.yml)); optional signing via secrets — [`RELEASING.md`](RELEASING.md). |
-| **M12** | **Partial** | Resize/DPI path + present mode + sync paint + non-wrapped line cache + battery cap + deferred show + PNG icon + `--resize-telemetry`; scripted CI stress / 8K prealloc / full checklist still open. |
-| **M13** | **Done (code)** | Multi-buffer + [`editor-workspace`](../crates/editor-workspace/README.md) integrated in `editor-app`. |
-| **M14** | **Partial** | `Ctrl+P` quick-open + fuzzy match + overlay in `editor-app`; sidebar + tab strip UI not built yet. |
-| **M15–M24** | **Not started** | Syntax, search, diff, git, AI stack — see [`MISSION_IMPLEMENTATION_STATUS.md`](MISSION_IMPLEMENTATION_STATUS.md). |
+| **M00–M06** | **Done** | Text engine, GPU text, file I/O — see [`MISSION_IMPLEMENTATION_STATUS.md`](MISSION_IMPLEMENTATION_STATUS.md). |
+| **M07** | **Partial** | Metrics HUD, `tracing` / optional Tracy, perf-smoke scripts; Criterion PR gate TBD. |
+| **M08** | **Partial** | [`MVP_ACCEPTANCE.md`](MVP_ACCEPTANCE.md), `gpu_resize_stress`; full measured rows TBD. |
+| **M09–M10** | **Done (code)** | Gutter, selection, clipboard, status bar, persistence, word nav. |
+| **M11** | **Partial** | Release workflow — [`RELEASING.md`](RELEASING.md). |
+| **M12** | **Done (code); QA open** | Sync paint on `Resized` / `ScaleFactorChanged`, adaptive present mode, battery cap, deferred first show, icon, `--resize-telemetry`, row scratch + `gpu_resize_stress`, CI job **`m12-gpu-resize-windows`**. Remaining: baseline videos, logged p99 acceptance, git tag `m12-complete`. |
+| **M13** | **Done (code)** | `editor-workspace` crate wired into `editor-app`: multi-buffer manager, MRU, tab strip, folder-open CLI arg, `notify`-backed FS events route to `external_modified`. Coherence tests in `crates/editor-workspace/tests/m13_coherence.rs`. |
+| **M14** | **Done (code)** | Sidebar (`Ctrl+B` / `Ctrl+Shift+E`), quick-open palette (`Ctrl+P`) and tab strip chrome paint each frame via `FrameChrome`; mouse routing respects sidebar / tab / overlay zones; keyboard intercept while palette is visible. |
+| **M15–M24** | **Varies** | Mission index and vision docs. V3 release ritual: [`missions/M24_V3_ACCEPTANCE_RELEASE.md`](missions/M24_V3_ACCEPTANCE_RELEASE.md); fill [`V3_ACCEPTANCE.md`](V3_ACCEPTANCE.md) as measurements land. |
+| **M18** (light) | **Partial** | Status bar shows the `git` branch name via `editor-git::GitRepo::discover`; modified count + gutter markers deferred. |
 
-**Detailed row-by-row:** [`MISSION_IMPLEMENTATION_STATUS.md`](MISSION_IMPLEMENTATION_STATUS.md).
-
-**Running M12+ in dependency order:** [`missions/SEQUENTIAL_EXECUTION_NOTES.md`](missions/SEQUENTIAL_EXECUTION_NOTES.md).
+**Row-by-row:** [`MISSION_IMPLEMENTATION_STATUS.md`](MISSION_IMPLEMENTATION_STATUS.md).
 
 ## Quality gates (local)
 
-Run after substantive changes:
-
 ```text
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo build --release
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
+cargo build --release -p editor-app
 ```
 
-Optional: `cargo bench -p editor-core`, `editor-app --dry-run`.
-
-Last verified: **2026-04-20** — `cargo fmt --check`, `clippy --workspace --all-targets --all-features --locked -- -D warnings`, `test --workspace --all-features --locked`, `build --release -p editor-app --locked`; tracing spans on `load_file_sync` / `save_file_sync` / `apply_edit`; `--dev-hud` CLI.
-
-## Canonical specs
-
-- Mission index: [`missions/00_MISSION_INDEX.md`](missions/00_MISSION_INDEX.md)
-- V3 vision: [`missions/00_V3_VISION.md`](missions/00_V3_VISION.md)
-- Short index: [`MISSIONS.md`](MISSIONS.md)
+Optional: `scripts/perf-smoke.ps1` / `perf-smoke.sh`; `scripts/resize-stress.ps1` / `resize-stress.sh`; `editor-app --dry-run`.

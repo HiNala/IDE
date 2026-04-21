@@ -4,8 +4,9 @@
 **Primary development OS:** Windows (10/11, x86_64)
 **Target OS support:** Windows, Linux, macOS (all x86_64 and aarch64 where feasible)
 **Core language:** Rust (stable)
-**Mission count:** 25 (M00 through M24)
-**Planned release tags:** `0.1.0-mvp` (M08) → `0.2.0-v2` (M10) → `0.2.1` packaged (M11) → `0.3.0-v3` AI-native (M24)
+**Mission count:** 29 (M00 through M28)
+**Planned release tags:** `0.1.0-mvp` (M08) → `0.2.0-v2` (M10) → `0.2.1` packaged + consolidated (M25) → `0.3.0-v3` AI-native (M24)
+**Current state:** As of 2026-04-20, M00-M10 shipped; M11-M13 partial; M14+ not started. See `00_STATE_2026_04_20.md` for the audit and the revised execution order (M25 runs before M14).
 
 ---
 
@@ -19,7 +20,7 @@ Missions M12 through M24 deliver **V3: the AI-native foundations**. The horizon 
 
 V4+ territory — autonomous background agents, plugin ecosystem, collaborative editing, LSP, debugger, inline autocomplete, remote editing — is explicitly out of scope for these missions. This mission set stops when V3 ships.
 
-The repository is scaffolded (workspace, CI, hello window). Mission M00 begins with research and documentation; M01 scaffolds the workspace and makes the first push. Later missions add the text engine, rendering, and file I/O (see `docs/STATUS.md` for live progress). Every subsequent mission builds on top of the previous ones and must leave the repository in a state where `cargo build`, `cargo test`, `cargo clippy`, and `cargo run` all succeed on Windows.
+The repository is currently empty. Mission M00 begins with research and documentation; M01 scaffolds the workspace and makes the first push. Every subsequent mission builds on top of the previous ones and must leave the repository in a state where `cargo build`, `cargo test`, `cargo clippy`, and `cargo run` all succeed on Windows.
 
 ---
 
@@ -179,27 +180,33 @@ Run missions in this order. Each mission assumes the previous one is complete. R
 | 09 | `M09` | V2: Line Numbers, Selection, Clipboard, Undo UI | Usable minimal editor |
 | 10 | `M10` | V2: Word Nav, Status Bar, Persistence, Polish | V2 acceptance → `0.2.0-v2` |
 
-### Packaging (M11) — public release
+### Packaging + Foundation Consolidation (M11 + M25) — public release + audit sweep
 
 | # | Mission ID | Title | Key Output |
 |---|---|---|---|
-| 11 | `M11` | Release Engineering & Cross-Platform Packaging | Installable binaries → `0.2.1` |
+| 11 | `M11` | Release Engineering & Cross-Platform Packaging | Installer plan, workflow scaffolding |
+| 25 | `M25` | Critical Fixes & Foundation Completion | Completes M11-M13; sweeps audit; ships `0.2.1` |
 
-### V3 (M12-M24) — AI-native foundations
+### V3 (M12-M28) — AI-native foundations
 
-See `00_V3_VISION.md` for the full V3 north star and mental model.
+See `00_V3_VISION.md` for the V3 north star and `00_STATE_2026_04_20.md` for the concrete sequencing notes.
+
+Execute in this order (revised 2026-04-20):
 
 | # | Mission ID | Title | Key Output |
 |---|---|---|---|
-| 12 | `M12` | Window, Resize, DPI: Snappy Response Polish | Instant resize, multi-monitor, no hitches |
-| 13 | `M13` | Workspace Model & Multi-Buffer Foundation | `editor-workspace` crate, `BufferManager`, file watcher |
-| 14 | `M14` | Sidebar, Tab Strip, Quick Open | Navigable project UI |
+| 12 | `M12` | Window, Resize, DPI: Snappy Response Polish | Instant resize, multi-monitor (folded into M25) |
+| 13 | `M13` | Workspace Model & Multi-Buffer Foundation | `editor-workspace` crate (completion folded into M25) |
+| 14 | `M14` | Sidebar, Tabs, Quick Open | Navigable project UI |
 | 15 | `M15` | Syntax Highlighting via Tree-sitter | Colored code for 6 core languages |
 | 16 | `M16` | Find & Replace (In-File + Project-Wide) | Ctrl+F, Ctrl+H, Ctrl+Shift+F |
 | 17 | `M17` | Diff Engine & Inline Renderer | Red/green hunk rendering |
 | 18 | `M18` | Git Integration Baseline | File status, branch, diff-vs-HEAD |
-| 19 | `M19` | AI Provider Abstraction | Multi-provider streaming + tool use |
+| 26 | `M26` | Integrated Terminal | Native PTY + VT emulator pane |
+| 19 | `M19` | AI Provider Abstraction (OpenAI first) | Multi-provider streaming + tool use |
+| 27 | `M27` | AI Skills System | Progressive-disclosure instruction set |
 | 20 | `M20` | Agent Tool-Use API & Safe Edit Transactions | Structured surface for LLMs to act |
+| 28 | `M28` | Settings UI & API Key Management | World-class minimal settings surface |
 | 21 | `M21` | Metadata Sidecar System | Per-file reasoning capture |
 | 22 | `M22` | Local Vector Index & Semantic Retrieval | Fast context assembly |
 | 23 | `M23` | AI Chat Panel & Edit-Approval Flow | Minimal integrated experience |
@@ -230,7 +237,8 @@ The project is backed by six PRD documents that define the product, architecture
 
 For V3 (M12 onward), additionally read:
 
-7. **`00_V3_VISION.md`** (in this folder) — the AI-native IDE horizon, the mental model for V3, and explicit out-of-scope items for V4+.
+7. **`00_V3_VISION.md`** — the AI-native IDE horizon, the mental model for V3, and explicit out-of-scope items for V4+.
+8. **`00_STATE_2026_04_20.md`** — current state snapshot, audit findings, and the concrete M25-M28 sequencing that supersedes a naive M12→M24 walk.
 
 These documents are the source of truth for *what* we are building and *why*. The mission documents are the source of truth for *how* to build it, step by step.
 

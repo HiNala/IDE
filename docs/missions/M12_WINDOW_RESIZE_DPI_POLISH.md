@@ -199,6 +199,16 @@ M13 assumes:
 
 ---
 
+## In-repository status (engineering)
+
+The following are implemented in code and docs (verify on your clone; some doc/script paths may need restore if the working tree hit disk limits):
+
+- **§4 / §5 / §6 / §7 / §8 / §9 / §11 / §12:** `editor-app` — synchronous `paint_frame` on `Resized` and `ScaleFactorChanged`, `sync_present_mode`, `battery` poll + FPS cap, fullscreen (F11), skip paint when minimized, deferred `set_visible`, window icon, `monitor_scale_by_name` persistence.
+- **§3 / §2 (app-owned):** `editor-render` — width-independent line shaping, `MAX_VISIBLE_ROW_SLOTS`, solid-quad fixed VB, `gpu_resize_stress` integration tests.
+- **§13 (partial):** `docs/DIAGNOSING_PERFORMANCE.md` § resize artifact catalog; `docs/CROSS_PLATFORM.md`, `docs/RENDERING_PIPELINE.md` M12 notes; `docs/STATUS.md` / `MISSION_IMPLEMENTATION_STATUS.md`.
+- **§10:** CI runs **`m12-gpu-resize-windows`** (`cargo test -p editor-render --test gpu_resize_stress`) for automated GPU/window resize checks; `scripts/resize-stress.*` are for **manual** drags + `--resize-telemetry` log inspection (full scripted UI drag is not in Actions).
+- **§13.5 / §14.5–14.6:** `m12-complete` tag, baseline videos, and p99 tables remain **release / QA** actions.
+
 ## Standing Orders Reminder
 
 - Pre-allocation costs memory; that's the right tradeoff for an interactive app. Never optimize memory over latency in the frame loop.

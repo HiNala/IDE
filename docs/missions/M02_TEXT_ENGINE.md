@@ -422,4 +422,12 @@ M03 will add real windowing + GPU context (beyond the smoke test) so M04 can ren
 - Criterion baselines are saved only on `main`. Don't save baselines from a feature branch (confusing for later).
 - If Ropey's API has changed since these notes were written, adapt. Update `/docs/TEXT_ENGINE.md` accordingly.
 
+---
+
+## As-built verification (2026-04)
+
+The `editor-core` crate on `main` **meets M02’s functional bar**: `TextBuffer` (rope, LF-internal, `LineEnding`), `BytePos`/`LineCol`, `Cursor` + `CursorMotion` (grapheme-aware via `unicode-segmentation`), `Selection`, `Edit`/`EditKind` with `apply`/`inverse`, `UndoStack` with time-window coalescing and `checkpoint`, unit tests, `crates/editor-core/tests/*.rs` (proptest at **256 cases** per `proptest!` block, plus cursor-boundary and undo/redo round-trip properties), and `crates/editor-core/benches/rope_benches.rs` (includes incoherent insert, random deletes, cursor up/down, undo push+checkpoint; very large buffers scaled down for laptop-friendly runs). `docs/TEXT_ENGINE.md` and [`API_DESIGN_NOTES.md`](../API_DESIGN_NOTES.md) describe the **actual** public API.
+
+**Doc / process deltas vs this mission file:** Saving a named baseline (`--save-baseline m02-mvp`) is optional and local. Tags like `m02-complete` are historical; use git tags if you need an audit trail.
+
 Go.

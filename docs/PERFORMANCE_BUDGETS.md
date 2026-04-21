@@ -91,6 +91,26 @@ is sufficient.
 
 See `TESTING_STRATEGY.md` for concrete harness locations.
 
+### M05: input mapping and CPU hot path (Criterion)
+
+Save local baselines (for regression compares with `critcmp`):
+
+```text
+cargo bench -p editor-input --bench translate -- --save-baseline m05-mvp
+cargo bench -p editor-app --bench input_hotpath -- --save-baseline m05-mvp
+```
+
+- **`editor-input` `translate`:** measures `map_keyboard_input` throughput (sub-microsecond per call on typical hardware).
+- **`editor-app` `input_hotpath`:** maps a printable key plus one rope `insert` at end of a 1 KiB buffer (CPU-only; no GPU).
+
+End-to-end **input → present** wall time is measured at runtime with **`editor-app --latency-trace`** (target `latency_trace`). On a recent Windows desktop with a discrete GPU, single-character inserts often land around **about 2–4 ms**; the contract in §1 remains **p99 under 5 ms** under normal load.
+
+### M06: file I/O (Criterion)
+
+```text
+cargo bench -p editor-io --bench file_io -- --save-baseline m06-mvp
+```
+
 ## 5. Budget Enforcement
 
 Each subsystem owns a budget. When a subsystem exceeds its budget, the
@@ -153,9 +173,23 @@ From those it configures:
 - **Calling `.await` on anything inside the 8.33 ms budget.** All awaits
   belong in background tasks.
 
+## 10. Tracy profiler (optional)
+
+For sporadic stutters or frame spikes, CPU-side spans can be viewed in the
+[Tracy](https://github.com/wolfpld/tracy) viewer (use a viewer version compatible
+with your `tracing-tracy` pin; see `crates/editor-app/Cargo.toml`).
+
+1. Build with the feature: `cargo build --release -p editor-app --features tracy`.
+2. Run `editor-app` as usual; start the Tracy viewer and connect to the local process
+   (default capture is typically localhost — see Tracy’s connection UI).
+3. Navigate the timeline to compare prepare vs GPU phases and gaps between frames.
+
+Tracy is optional and off by default; day-to-day checks use the dev HUD (Ctrl+F11) and
+`RUST_LOG` first. See [`DIAGNOSING_PERFORMANCE.md`](./DIAGNOSING_PERFORMANCE.md).
+
 ---
 
-*Last updated: M00.*
+*Last updated: 2026-04-21 — §4 M05 Criterion baselines; M07 §10 Tracy unchanged.*
 
 ## Mission M00 reference appendix (auto-expanded)
 

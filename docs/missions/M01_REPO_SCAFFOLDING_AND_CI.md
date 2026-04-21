@@ -523,4 +523,12 @@ M02 will flesh out `editor-core`: rope wrapper, cursor, selection, undo/redo, be
 - If `wgpu` or `winit` has moved to a breaking version since this mission was written, adapt — do not pin to an outdated version just to match this doc. Update the doc instead.
 - If you hit a Windows-specific issue (common with native windowing), document the fix in `/docs/CROSS_PLATFORM.md` and link from the code with a comment: `// See docs/CROSS_PLATFORM.md#windows-long-paths`.
 
+---
+
+## As-built verification (2026-04)
+
+This repository **satisfies M01’s intent** on `main`: virtual workspace, pinned `rust-toolchain.toml`, `rustfmt.toml` / `.clippy.toml` / `deny.toml` / `.editorconfig`, GitHub Actions (`ci.yml`, `audit.yml`, `bench.yml`), headless `editor-app --dry-run` + integration test, Windows `app.manifest` (long paths + UTF-8 code page), `.githooks/pre-commit`, and `editor-render::GpuContext` in `gpu.rs`.
+
+**Difference from the original spec:** the workspace has **eight** members, not six — `crates/editor-diff` and `crates/editor-workspace` were added in later missions. The original six remain; treat M01 acceptance criterion #7 as “those six exist, plus documented extensions.”
+
 Go.

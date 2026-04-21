@@ -137,7 +137,7 @@ Now another agent, asked a week later about `src/auth.rs`, reads this sidecar in
       pub history: Vec<HistoryEntry>,      // append-only
       pub dependencies_section: String,
       pub references_section: String,
-      pub notes_section: String,
+      pub notes: String,
   }
   pub struct HistoryEntry {
       pub timestamp: DateTime<Utc>,

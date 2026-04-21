@@ -16,14 +16,14 @@ This document is the **single checklist** for MVP release. Requirements are merg
 | Field | Value |
 |---|---|
 | **Report date** | 2026-04-20 |
-| **Codebase state** | Missions **M00–M01** implemented (workspace + hello window + `--dry-run`). Editing, file I/O, text rendering, and observability missions **not yet complete**. |
+| **Codebase state** | **M00–M13 (code)** in tree: text engine, wgpu+glyphon UI, async I/O, metrics HUD, multi-buffer workspace; **performance numbers** still mostly manual / Criterion (not all green below). |
 | **Requirements total** | 28 rows below |
-| **Green** | 3 (CI + build sanity only) |
-| **Yellow / N/A** | 25 (blocked on M02–M07 or manual hardware runs) |
+| **Green** | CI gates + implemented features (see rows marked ✅) |
+| **Yellow / N/A** | Rows needing hardware benchmarks, soak tests, or crash-injection harnesses |
 | **Red** | 0 |
-| **Release approved** | **No** — acceptance cannot be completed until M02–M07 deliver the editor features and measurements this checklist targets. |
+| **Release approved** | **No** — fill **Measured** for latency/memory targets and run cross-platform soak before claiming MVP closure. |
 
-**Next step:** Complete missions **M02 → M07**, then re-run this document: fill **Measured**, set **Status** to ✅ or ❌, and repeat until **Release approved: Yes** or documented ⚠️ with a `FOLLOWUPS.md` entry.
+**Next step:** Run [`docs/PERFORMANCE_BUDGETS.md`](PERFORMANCE_BUDGETS.md) checks on target hardware; update **Measured**; promote N/A → ✅ where evidence exists.
 
 ---
 
@@ -52,10 +52,10 @@ Status legend: **✅** pass · **❌** fail · **⚠️** caveat (see notes) · 
 | PRD-2a | Sub-5 ms input-to-pixel (philosophy) | PRD §2 | Same as NF-01 | &lt; 5 ms | — | N/A |
 | PRD-2b | Never block RT loop for background work | PRD §2 | Code review + tracing | No long waits on main thread | — | N/A |
 | PRD-2c | Bounded memory | PRD §2 | Soak + RSS | Bounded | — | N/A |
-| PRD-12a | Open file from disk | PRD §12 | Manual + CLI | Works | — | N/A |
-| PRD-12b | View/edit with cursor | PRD §12 | Functional test | Works | — | N/A |
-| PRD-12c | Smooth scroll large doc | PRD §12 | 100 MB scroll | Smooth | — | N/A |
-| PRD-12d | Atomic save | PRD §12 | Integration + injection | Correct bytes on disk | — | N/A |
+| PRD-12a | Open file from disk | PRD §12 | Manual + CLI | Works | `editor-app` + `editor-io` | ✅ |
+| PRD-12b | View/edit with cursor | PRD §12 | Functional test | Works | Core + app | ✅ |
+| PRD-12c | Smooth scroll large doc | PRD §12 | 100 MB scroll | Smooth | `stress_100mb_buffer_smoke` (ignored) / manual | ⚠️ |
+| PRD-12d | Atomic save | PRD §12 | Integration + injection | Correct bytes on disk | `save_file_sync` | ✅ (injection N/A) |
 | PRD-12e | Cross-platform | PRD §12 | CI + manual | Win / Linux / macOS | **CI builds** | ✅ |
 | PRD-13a | NFR table (latency, fps, cold, 100MB, memory) | PRD §13 | Mapped to NF / AC rows | See targets | — | N/A |
 | PRD-14 | Success vs VS Code / Cursor | PRD §14 | Side-by-side benchmarks | Faster on agreed metrics | — | N/A |
@@ -66,17 +66,16 @@ Status legend: **✅** pass · **❌** fail · **⚠️** caveat (see notes) · 
 
 ## Stress tests (M08 mission list)
 
-The following are **specified** in the M08 mission; implementation is **pending** until upstream features exist.
-
 | Suite | Description | Status |
 |-------|-------------|--------|
-| Large file 1–2 GB | Open/scroll/save timings on real hardware | Not run — no large-file path |
-| Long session 1 h | 1M scripted commands, RSS + p99 drift | Not run — no `EditorState` harness |
-| Adversarial proptest | Random `EditorCommand` sequences | Not run — no `EditorState` |
-| Rapid resize / DPI | Manual + automated `resize` loop | Partial — `GpuContext::resize` exists; no 100-iter automated GPU test in CI |
-| Fast typing | 10k chars/s + realistic 15 c/s | Not run |
-| Save/load races | Cancel / ordering | Not run — async I/O not integrated |
-| External file change | Detection on focus | Not run |
+| Large buffer / 100 MiB | Rope + edits within budget | `m08_acceptance_smoke` (+ optional ignored 100 MiB) |
+| Large file 1–2 GB | Open/scroll/save on real hardware | **Manual** — `editor-io` mmap path; not automated in CI |
+| Long session 1 h | 1M scripted commands, RSS + p99 drift | **Not implemented** — no headless `EditorCommand` harness |
+| Adversarial proptest | Random edit stream | `edits_proptest`, `proptest_rope_invariants` in `editor-core` |
+| Rapid resize / DPI | 100× `EditorRenderer::resize` | `crates/editor-render/tests/gpu_resize_stress.rs` (uses `with_any_thread` on Win/Linux; **ignored on macOS**) |
+| Fast typing | 10k chars/s + realistic 15 c/s | **Not automated** |
+| Save/load races | Cancel / ordering | Worker channels — **targeted test not landed** |
+| External file change | Detection on focus | `WindowEvent::Focused` + mtime in `editor-app` |
 
 ---
 
@@ -84,10 +83,10 @@ The following are **specified** in the M08 mission; implementation is **pending*
 
 | Item | Status |
 |------|--------|
-| Banner / GPU lost / save-load errors | **Pending** — requires `TextLayer` or overlay (M04/M07) |
-| Window title: file name + `*` dirty | **Pending** — requires buffer + path state |
-| Exit codes (0 / 2 / 64) | **Partial** — see `DEVELOPMENT.md` §8 |
-| `--perf-smoke` | **Pending** — script + flag (M07) |
+| Banner for save/load/GPU lost | **Partial** — failures **log + warn**; top banner overlay **not** implemented (`FOLLOWUPS.md`) |
+| Window title: file name + `*` dirty | **Done** — `sync_window_title` in `editor-app` |
+| Exit codes (0 / 2 / 64) | **`0`, `64` wired** — unrecoverable GPU → **2** reserved; see [`DEVELOPMENT.md`](../DEVELOPMENT.md) §9 |
+| `--perf-smoke` | **Optional** — see metrics HUD / tracing (`--dev-hud`, `RUST_LOG`) |
 
 ---
 
