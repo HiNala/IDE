@@ -1,4 +1,5 @@
-# Compile-check benchmarks on main (full runs + regression gates come in M07).
+# Compile-check benchmarks on main. Full Criterion baseline + critcmp + 10% gate
+# is tracked in `.github/workflows/ci.yml` / `docs/MISSION_IMPLEMENTATION_STATUS.md` (M07 partial).
 name: Benchmarks
 
 on:

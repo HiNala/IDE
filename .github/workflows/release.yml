@@ -1,12 +1,10 @@
-# M11 — Unsigned release artifacts on git tags (MSI/dmg/deb/AppImage are follow-ups).
-# Pushes matching `v*` build `editor-app` on Windows, Linux, macOS and attach to GitHub Releases.
-
+# M11 — Packaged releases on semver tags (`v1.2.3`). Produces MSI, DMG, .deb, AppImage, SHA256SUMS (+ optional GPG).
 name: Release
 
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 permissions:
   contents: write
@@ -16,13 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: build (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    name: Windows (MSI)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -30,66 +24,174 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-${{ matrix.os }}
+          shared-key: release-windows-msi
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-            libwayland-dev libxkbcommon-dev \
-            libvulkan-dev mesa-vulkan-drivers \
-            libasound2-dev pkg-config
+      - uses: ilammy/msvc-dev-cmd@v1
 
-      - name: MSVC dev environment (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
 
       - name: Build release binary
         run: cargo build --release -p editor-app --locked
 
-      - name: Stage artifact
-        shell: bash
-        env:
-          VERSION: ${{ github.ref_name }}
+      - name: Build MSI
         run: |
-          mkdir -p dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/editor-app.exe "dist/ide-${VERSION}-windows-x86_64.exe"
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            cp target/release/editor-app "dist/ide-${VERSION}-macos-x86_64"
-            chmod +x "dist/ide-${VERSION}-macos-x86_64"
-          else
-            cp target/release/editor-app "dist/ide-${VERSION}-linux-x86_64"
-            chmod +x "dist/ide-${VERSION}-linux-x86_64"
-          fi
+          New-Item -ItemType Directory -Force -Path target/wix | Out-Null
+          cargo wix -p editor-app --nocapture --output "target/wix/ide-${{ github.ref_name }}-windows-x86_64.msi"
+
+      - name: Sign MSI (optional)
+        if: ${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $pfx = [System.Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_PFX_BASE64 }}")
+          [System.IO.File]::WriteAllBytes("cert.pfx", $pfx)
+          $msi = Get-ChildItem "target/wix/*.msi" | Select-Object -First 1
+          $signtoolExe = $null
+          $fromKits = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($fromKits) { $signtoolExe = $fromKits.FullName }
+          if (-not $signtoolExe) {
+            $cmd = Get-Command signtool -ErrorAction SilentlyContinue
+            if ($cmd) { $signtoolExe = $cmd.Source }
+          }
+          if (-not $signtoolExe) { throw "signtool.exe not found; install Windows SDK" }
+          & $signtoolExe sign /f cert.pfx /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 $msi.FullName
+          Remove-Item cert.pfx -Force
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ide-${{ matrix.os }}
-          path: dist/*
+          name: windows-artifacts
+          path: target/wix/*.msi
+
+  build-macos:
+    name: macOS (DMG)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos-dmg
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --locked
+
+      - name: Build release
+        run: cargo build --release -p editor-app --locked
+
+      - name: Bundle .app
+        run: cargo bundle --release -p editor-app --format osx
+
+      - name: Package DMG
+        id: macos_dmg
+        env:
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          NOTARY_PROFILE: ide-notary
+        run: |
+          case "$(uname -m)" in
+            arm64) suf=macos-aarch64 ;;
+            x86_64) suf=macos-x86_64 ;;
+            *) suf=macos ;;
+          esac
+          out="target/release/ide-${{ github.ref_name }}-${suf}.dmg"
+          echo "dmg_path=$out" >> "$GITHUB_OUTPUT"
+          bash scripts/macos-package.sh "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: ${{ steps.macos_dmg.outputs.dmg_path }}
+
+  build-linux:
+    name: Linux (deb + AppImage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev libxinerama-dev \
+            libvulkan-dev mesa-vulkan-drivers \
+            libasound2-dev libgl1-mesa-dev libegl1-mesa-dev \
+            fuse libfuse2 wget
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-deb
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --locked
+
+      - name: Install appimagetool
+        run: |
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+
+      - name: Build release
+        run: cargo build --release -p editor-app --locked
+
+      - name: Build .deb
+        run: cargo bundle --release -p editor-app --format deb
+
+      - name: Build AppImage
+        run: bash scripts/linux-appimage.sh "target/release/ide-${{ github.ref_name }}-linux-x86_64.AppImage"
+
+      - name: Rename .deb
+        run: |
+          deb=$(ls target/release/bundle/deb/*.deb | head -1)
+          mv "$deb" "target/release/ide-${{ github.ref_name }}-linux-x86_64.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            target/release/ide-${{ github.ref_name }}-linux-x86_64.deb
+            target/release/ide-${{ github.ref_name }}-linux-x86_64.AppImage
 
   publish:
     name: GitHub Release
-    needs: build
+    needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: ide-*
           merge-multiple: true
 
       - name: SHA256 checksums
         run: |
           cd artifacts
-          sha256sum * > SHA256SUMS.txt
+          shopt -s nullglob
+          files=(*.msi *.dmg *.deb *.AppImage)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No packaged artifacts to checksum." >&2
+            exit 1
+          fi
+          sha256sum "${files[@]}" > SHA256SUMS.txt
+
+      - name: Sign checksums (optional GPG)
+        if: ${{ secrets.RELEASE_GPG_PRIVATE_KEY != '' }}
+        run: |
+          echo "${{ secrets.RELEASE_GPG_PRIVATE_KEY }}" | gpg --batch --import
+          cd artifacts
+          gpg --batch --yes --detach-sign --armor SHA256SUMS.txt
 
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

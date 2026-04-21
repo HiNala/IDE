@@ -125,3 +125,40 @@ jobs:
         with:
           command: check bans licenses sources advisories
           log-level: warn
+
+  bench-regression:
+    name: bench regression (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: 1
+      # Allow toolchain/bench output without `-D warnings` (workflow default).
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-regression-ubuntu-latest
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libwayland-dev libxkbcommon-dev \
+            libvulkan-dev mesa-vulkan-drivers pkg-config
+      - name: Compare rope baseline (main) vs PR
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          git fetch origin main
+          git checkout origin/main
+          cargo bench -p editor-core --bench rope_benches --locked -- insert_random_coherent_500 --save-baseline main
+          git checkout "$HEAD_SHA"
+          cargo bench -p editor-core --bench rope_benches --locked -- insert_random_coherent_500 --baseline main --save-baseline pr
+          python3 scripts/bench_regression_gate.py
+          cargo install critcmp --locked
+          critcmp main pr -f insert_random_coherent_500 -t 10
