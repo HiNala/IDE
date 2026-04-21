@@ -86,6 +86,14 @@ pub enum EditorCommand {
     ToggleQuickOpen,
     /// Focus sidebar for keyboard navigation (**Ctrl+Shift+E**).
     FocusSidebar,
+    /// Open in-buffer find bar (**Ctrl+F**). Hides replace row.
+    FindInFile,
+    /// Open in-buffer find bar with replace row visible (**Ctrl+H**).
+    ReplaceInFile,
+    /// Jump to the next in-buffer match (**F3** or Enter while find bar focused).
+    FindNext,
+    /// Jump to the previous in-buffer match (**Shift+F3** or Shift+Enter).
+    FindPrev,
     /// Dismiss modal overlay / cancel (Escape); app decides vs quit.
     Cancel,
 }

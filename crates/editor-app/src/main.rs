@@ -29,7 +29,7 @@ use editor_io::{load_file_sync, save_file_sync, Encoding, LoadError, LoadedFile,
 use editor_settings::{LegacySessionMerge, LineEndingPreference, SettingsStore};
 use editor_terminal::{detect_shell, Terminal, TerminalConfig, TerminalId};
 use editor_ui::{
-    paint_tab_strip, FrameChrome, QuickOpenPalette, Sidebar, TabHit, TAB_STRIP_HEIGHT,
+    paint_tab_strip, FindBar, FrameChrome, QuickOpenPalette, Sidebar, TabHit, TAB_STRIP_HEIGHT,
 };
 use editor_workspace::entry::FileEntry;
 use editor_workspace::{BufferId, BufferManager, FileSystemEvent, Workspace};
@@ -434,6 +434,7 @@ fn run_windowed(
         },
         quick_open: QuickOpenPalette::new(),
         tab_hits: Vec::new(),
+        find_bar: FindBar::default(),
         git_branch: None,
         git_last_refresh: Instant::now() - Duration::from_secs(10),
     };
@@ -516,6 +517,9 @@ struct App {
     quick_open: QuickOpenPalette,
     /// Tab hit boxes from the last frame's `paint_tab_strip` — used by mouse routing.
     tab_hits: Vec<TabHit>,
+    // --- M16 in-buffer find / replace -----------------------------------------------
+    /// Active find / replace overlay (M16). Hidden by default.
+    find_bar: FindBar,
     // --- M18 light-touch git branch in the status bar --------------------------------
     git_branch: Option<String>,
     git_last_refresh: Instant,
@@ -1105,6 +1109,230 @@ impl App {
         self.clamp_scroll();
     }
 
+    /// Open the find bar with optional replace row; seed query from the current selection
+    /// if it is a single-line slice.
+    fn open_find_bar(&mut self, with_replace: bool) {
+        self.find_bar.visible = true;
+        self.find_bar.replace_row_visible = with_replace;
+        self.find_bar.focus_replace = false;
+        if !self.selection.is_empty() {
+            let r = self.selection.range();
+            if let Ok(text) = self.buffer.slice_to_string(r.start..r.end) {
+                if !text.contains('\n') && text.len() <= 256 {
+                    self.find_bar.query = text;
+                    self.find_bar.query_cursor = self.find_bar.query.len();
+                }
+            }
+        }
+        // Recompute matches right away.
+        self.find_bar.rerun_search(&self.buffer.snapshot());
+        // If a match exists, pick the one closest to the caret.
+        if !self.find_bar.matches.is_empty() {
+            let caret = self.cursor.pos().0;
+            let idx = self
+                .find_bar
+                .matches
+                .iter()
+                .position(|m| m.byte_range.start >= caret)
+                .unwrap_or(0);
+            self.find_bar.current_match = Some(idx.min(self.find_bar.matches.len() - 1));
+        }
+        self.reveal_current_match();
+        self.request_redraw();
+    }
+
+    /// Move caret + selection to the current match (if any) and scroll it into view.
+    fn reveal_current_match(&mut self) {
+        let Some(idx) = self.find_bar.current_match else {
+            return;
+        };
+        let Some(m) = self.find_bar.matches.get(idx) else {
+            return;
+        };
+        let start = BytePos(m.byte_range.start);
+        let end = BytePos(m.byte_range.end);
+        self.selection = Selection { anchor: start, head: end };
+        self.cursor = Cursor::new(end);
+        self.scroll_cursor_into_view();
+    }
+
+    /// Replace the current match with `find_bar.replace`, advance to the next match. Returns
+    /// whether an edit occurred.
+    fn apply_replace_current(&mut self) -> bool {
+        if self.find_bar.current_match.is_none() || self.find_bar.matches.is_empty() {
+            return false;
+        }
+        let idx = self.find_bar.current_match.unwrap();
+        let replacement = self.find_bar.replace.clone();
+        match editor_search::replace_one(
+            &mut self.buffer,
+            idx,
+            &self.find_bar.matches,
+            &replacement,
+        ) {
+            Ok((edits, _delta)) => {
+                for e in edits {
+                    self.undo.push(e);
+                }
+                self.dirty = true;
+                self.find_bar.rerun_search(&self.buffer.snapshot());
+                // Advance to next if any remain.
+                if !self.find_bar.matches.is_empty() {
+                    let next = idx.min(self.find_bar.matches.len() - 1);
+                    self.find_bar.current_match = Some(next);
+                    self.reveal_current_match();
+                } else {
+                    self.find_bar.current_match = None;
+                }
+                true
+            }
+            Err(e) => {
+                warn!(error = %e, "find: replace_one failed");
+                false
+            }
+        }
+    }
+
+    /// Replace every match. Returns the number of replacements applied.
+    fn apply_replace_all(&mut self) -> usize {
+        if self.find_bar.matches.is_empty() {
+            return 0;
+        }
+        let replacement = self.find_bar.replace.clone();
+        match editor_search::replace_all(&mut self.buffer, &self.find_bar.matches, &replacement) {
+            Ok((edits, count)) => {
+                for e in edits {
+                    self.undo.push(e);
+                }
+                if count > 0 {
+                    self.dirty = true;
+                }
+                self.find_bar.rerun_search(&self.buffer.snapshot());
+                count
+            }
+            Err(e) => {
+                warn!(error = %e, "find: replace_all failed");
+                0
+            }
+        }
+    }
+
+    /// Handle a key press when the find bar is active. Returns `true` if consumed.
+    fn handle_find_bar_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return false;
+        };
+        let shift = self.modifiers.shift_key();
+        let ctrl = self.modifiers.control_key();
+        match code {
+            KeyCode::Escape => {
+                self.find_bar.visible = false;
+                self.find_bar.matches.clear();
+                self.find_bar.current_match = None;
+                self.find_bar.regex_error = None;
+                true
+            }
+            KeyCode::Enter => {
+                if ctrl && self.find_bar.replace_row_visible {
+                    let _ = self.apply_replace_all();
+                } else if self.find_bar.focus_replace && self.find_bar.replace_row_visible {
+                    self.apply_replace_current();
+                } else if shift {
+                    self.find_bar.prev_match();
+                    self.reveal_current_match();
+                } else {
+                    self.find_bar.next_match();
+                    self.reveal_current_match();
+                }
+                true
+            }
+            KeyCode::F3 => {
+                if shift {
+                    self.find_bar.prev_match();
+                } else {
+                    self.find_bar.next_match();
+                }
+                self.reveal_current_match();
+                true
+            }
+            KeyCode::Tab => {
+                if self.find_bar.replace_row_visible {
+                    self.find_bar.focus_replace = !self.find_bar.focus_replace;
+                }
+                true
+            }
+            KeyCode::Backspace => {
+                let (field, cursor) = if self.find_bar.focus_replace {
+                    (&mut self.find_bar.replace, &mut self.find_bar.replace_cursor)
+                } else {
+                    (&mut self.find_bar.query, &mut self.find_bar.query_cursor)
+                };
+                if *cursor > 0 {
+                    let mut new_cursor = *cursor - 1;
+                    while new_cursor > 0 && !field.is_char_boundary(new_cursor) {
+                        new_cursor -= 1;
+                    }
+                    field.replace_range(new_cursor..*cursor, "");
+                    *cursor = new_cursor;
+                }
+                if !self.find_bar.focus_replace {
+                    self.find_bar.rerun_search(&self.buffer.snapshot());
+                }
+                true
+            }
+            KeyCode::ArrowLeft => {
+                let (field, cursor) = if self.find_bar.focus_replace {
+                    (&self.find_bar.replace, &mut self.find_bar.replace_cursor)
+                } else {
+                    (&self.find_bar.query, &mut self.find_bar.query_cursor)
+                };
+                if *cursor > 0 {
+                    let mut new_cursor = *cursor - 1;
+                    while new_cursor > 0 && !field.is_char_boundary(new_cursor) {
+                        new_cursor -= 1;
+                    }
+                    *cursor = new_cursor;
+                }
+                true
+            }
+            KeyCode::ArrowRight => {
+                let (field, cursor) = if self.find_bar.focus_replace {
+                    (&self.find_bar.replace, &mut self.find_bar.replace_cursor)
+                } else {
+                    (&self.find_bar.query, &mut self.find_bar.query_cursor)
+                };
+                let len = field.len();
+                if *cursor < len {
+                    let mut new_cursor = *cursor + 1;
+                    while new_cursor < len && !field.is_char_boundary(new_cursor) {
+                        new_cursor += 1;
+                    }
+                    *cursor = new_cursor;
+                }
+                true
+            }
+            _ => {
+                if let Some(t) = event.text.as_ref() {
+                    if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
+                        let (field, cursor) = if self.find_bar.focus_replace {
+                            (&mut self.find_bar.replace, &mut self.find_bar.replace_cursor)
+                        } else {
+                            (&mut self.find_bar.query, &mut self.find_bar.query_cursor)
+                        };
+                        field.insert_str(*cursor, t.as_str());
+                        *cursor += t.len();
+                        if !self.find_bar.focus_replace {
+                            self.find_bar.rerun_search(&self.buffer.snapshot());
+                        }
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
     /// Handle a key press when the quick-open palette is active.
     /// Returns `true` when the palette consumed the event (caller should not dispatch further).
     fn handle_quick_open_key(&mut self, event: &winit::event::KeyEvent) -> bool {
@@ -1629,8 +1857,9 @@ impl App {
 
         let sidebar_on = self.sidebar.visible;
         let tabstrip_on = !self.buffers.is_empty();
+        let find_on = self.find_bar.visible;
 
-        if !sidebar_on && !tabstrip_on && !self.quick_open.visible {
+        if !sidebar_on && !tabstrip_on && !self.quick_open.visible && !find_on {
             return (None, 0.0, 0.0, Vec::new());
         }
 
@@ -1666,6 +1895,11 @@ impl App {
             tab_hits = paint_tab_strip(&mut chrome, &self.buffers, scale, inset_left_px, 0.0, 0.0);
         }
 
+        // Find bar: backdrop + highlight quads for visible matches + overlay text.
+        if find_on {
+            self.paint_find_bar_into_chrome(&mut chrome, inset_left_px, inset_top_px, physical);
+        }
+
         // Quick-open palette: dim overlay + centered card.
         if self.quick_open.visible {
             self.quick_open.paint(
@@ -1677,6 +1911,99 @@ impl App {
         }
 
         (Some(chrome), inset_left_px, inset_top_px, tab_hits)
+    }
+
+    /// Paint M16 find-bar backdrop, overlay text, and match highlights into `chrome`.
+    fn paint_find_bar_into_chrome(
+        &self,
+        chrome: &mut FrameChrome,
+        inset_left_px: f32,
+        inset_top_px: f32,
+        physical: PhysicalSize<u32>,
+    ) {
+        let scale = self.scale_factor;
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let line_h = renderer.line_height_px();
+        let (gutter_w, char_w) =
+            editor_render::compute_gutter_width_px(self.buffer.len_lines(), scale);
+        let body_left = inset_left_px + 8.0 + gutter_w;
+        let body_top = inset_top_px;
+        let status_h = self.status_bar_height_px();
+        let term_h = self.terminal_pane_height_px();
+        let content_bottom = physical.height as f32 - status_h - term_h;
+
+        // 1) Match highlights — semi-transparent tint per visible match.
+        let scroll_y = self.scroll.y_px;
+        let current = self.find_bar.current_match;
+        for (i, m) in self.find_bar.matches.iter().enumerate() {
+            let start = m.byte_range.start;
+            let end = m.byte_range.end;
+            let Ok(start_lc) = self.buffer.byte_to_line_col(BytePos(start)) else {
+                continue;
+            };
+            let Ok(end_lc) = self.buffer.byte_to_line_col(BytePos(end)) else {
+                continue;
+            };
+            let rgba = if Some(i) == current {
+                [1.0, 0.75, 0.1, 0.55]
+            } else {
+                [1.0, 0.9, 0.3, 0.32]
+            };
+            // One rect per line the match spans.
+            for line in start_lc.line..=end_lc.line {
+                let line_top = body_top + 4.0 + (line as f32) * line_h - scroll_y;
+                let line_bot = line_top + line_h;
+                if line_bot < body_top || line_top > content_bottom {
+                    continue;
+                }
+                let col_start = if line == start_lc.line { start_lc.col } else { 0 };
+                let col_end = if line == end_lc.line {
+                    end_lc.col
+                } else {
+                    self.buffer.line_len_bytes(line).unwrap_or(col_start)
+                };
+                let left = body_left + (col_start as f32) * char_w;
+                let width = ((col_end - col_start) as f32).max(0.0) * char_w;
+                if width <= 0.0 {
+                    continue;
+                }
+                chrome.push_quad(editor_ui::ChromeQuad {
+                    left,
+                    top: line_top.max(body_top),
+                    width,
+                    height: (line_bot.min(content_bottom) - line_top.max(body_top)).max(0.0),
+                    rgba,
+                });
+            }
+        }
+
+        // 2) Find bar backdrop — dark strip just below the tab strip, spanning the editor body.
+        let backdrop_top = body_top;
+        let backdrop_height = self.find_bar.backdrop_height_px(scale);
+        chrome.push_quad(editor_ui::ChromeQuad {
+            left: inset_left_px,
+            top: backdrop_top,
+            width: (physical.width as f32 - inset_left_px).max(0.0),
+            height: backdrop_height,
+            rgba: [0.15, 0.15, 0.17, 0.96],
+        });
+
+        // 3) Overlay text (title, flags + Find field, Replace field, match count).
+        let overlay = self.find_bar.format_overlay(self.blink_on);
+        for (row, line_text) in overlay.lines().enumerate() {
+            let row_top = backdrop_top + 4.0 * scale + (row as f32) * (12.0 * scale);
+            if row_top + (12.0 * scale) > backdrop_top + backdrop_height {
+                break;
+            }
+            chrome.push_line(
+                inset_left_px + 8.0 * scale,
+                row_top,
+                line_text.to_string(),
+                [0xdc, 0xdc, 0xdc],
+            );
+        }
     }
 
     fn sync_window_title(&self) {
@@ -1967,6 +2294,14 @@ impl App {
                 false
             }
             EditorCommand::Cancel => {
+                if self.find_bar.visible {
+                    self.find_bar.visible = false;
+                    self.find_bar.matches.clear();
+                    self.find_bar.current_match = None;
+                    self.find_bar.regex_error = None;
+                    self.request_redraw();
+                    return false;
+                }
                 if self.quick_open.visible {
                     self.quick_open.hide();
                     self.request_redraw();
@@ -2098,6 +2433,38 @@ impl App {
                 self.file_mtime = None;
                 self.active_buffer_id = Some(id);
                 self.sync_window_title();
+                false
+            }
+            EditorCommand::FindInFile => {
+                self.open_find_bar(false);
+                false
+            }
+            EditorCommand::ReplaceInFile => {
+                self.open_find_bar(true);
+                false
+            }
+            EditorCommand::FindNext => {
+                if !self.find_bar.visible {
+                    self.open_find_bar(false);
+                }
+                if !self.find_bar.query.is_empty() {
+                    self.find_bar.rerun_search(&self.buffer.snapshot());
+                    self.find_bar.next_match();
+                    self.reveal_current_match();
+                }
+                self.request_redraw();
+                false
+            }
+            EditorCommand::FindPrev => {
+                if !self.find_bar.visible {
+                    self.open_find_bar(false);
+                }
+                if !self.find_bar.query.is_empty() {
+                    self.find_bar.rerun_search(&self.buffer.snapshot());
+                    self.find_bar.prev_match();
+                    self.reveal_current_match();
+                }
+                self.request_redraw();
                 false
             }
         }
@@ -2285,6 +2652,20 @@ impl ApplicationHandler<AppEvent> for App {
                     self.request_redraw();
                 }
                 Ime::Commit(text) => {
+                    if self.find_bar.visible && !text.is_empty() {
+                        let (field, cursor) = if self.find_bar.focus_replace {
+                            (&mut self.find_bar.replace, &mut self.find_bar.replace_cursor)
+                        } else {
+                            (&mut self.find_bar.query, &mut self.find_bar.query_cursor)
+                        };
+                        field.insert_str(*cursor, text.as_str());
+                        *cursor += text.len();
+                        if !self.find_bar.focus_replace {
+                            self.find_bar.rerun_search(&self.buffer.snapshot());
+                        }
+                        self.request_redraw();
+                        return;
+                    }
                     if self.quick_open.visible && !text.is_empty() {
                         for ch in text.chars() {
                             self.quick_open.push_char(ch);
@@ -2318,6 +2699,11 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 if is_synthetic {
+                    return;
+                }
+                if self.find_bar.visible && self.handle_find_bar_key(&event) {
+                    self.sync_window_title();
+                    self.request_redraw();
                     return;
                 }
                 if self.quick_open.visible && self.handle_quick_open_key(&event) {

@@ -33,6 +33,7 @@ editor-settings   = { path = "../editor-settings" }
 editor-terminal   = { path = "../editor-terminal" }
 editor-index      = { path = "../editor-index" }
 editor-git        = { path = "../editor-git" }
+editor-search     = { path = "../editor-search" }
 
 directories        = { workspace = true }
 serde              = { workspace = true }

@@ -109,6 +109,8 @@ pub fn map_keyboard_input(
                 KeyCode::KeyB => return Some(EditorCommand::ToggleSidebar),
                 KeyCode::KeyP => return Some(EditorCommand::ToggleQuickOpen),
                 KeyCode::KeyE if modifiers.shift_key() => return Some(EditorCommand::FocusSidebar),
+                KeyCode::KeyF => return Some(EditorCommand::FindInFile),
+                KeyCode::KeyH => return Some(EditorCommand::ReplaceInFile),
                 KeyCode::KeyQ => return Some(EditorCommand::Quit),
                 KeyCode::Home => {
                     return Some(EditorCommand::ApplyCursorMotion {
@@ -128,6 +130,14 @@ pub fn map_keyboard_input(
 
         if matches!(code, KeyCode::Escape) {
             return Some(EditorCommand::Cancel);
+        }
+
+        if matches!(code, KeyCode::F3) {
+            return Some(if modifiers.shift_key() {
+                EditorCommand::FindPrev
+            } else {
+                EditorCommand::FindNext
+            });
         }
 
         if wm {
