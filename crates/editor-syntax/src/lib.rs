@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod rust;
+pub mod toml;
 
 /// Semantic category of a token. Renderers map these to theme colors.
 ///
@@ -74,6 +75,7 @@ impl TokenSpan {
 pub enum Language {
     Plain,
     Rust,
+    Toml,
 }
 
 impl Language {
@@ -84,7 +86,17 @@ impl Language {
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_ascii_lowercase().as_str() {
             "rs" => Self::Rust,
+            "toml" => Self::Toml,
             _ => Self::Plain,
+        }
+    }
+
+    /// Match well-known config filenames (e.g. `Cargo.lock` uses TOML syntax).
+    #[must_use]
+    fn from_filename(name: &str) -> Option<Self> {
+        match name {
+            "Cargo.lock" | "rust-toolchain" => Some(Self::Toml),
+            _ => None,
         }
     }
 
@@ -92,6 +104,11 @@ impl Language {
     /// [`Self::from_extension`] for callers that already hold a `Path`.
     #[must_use]
     pub fn from_path(path: &std::path::Path) -> Self {
+        if let Some(name) = path.file_name().and_then(|f| f.to_str()) {
+            if let Some(lang) = Self::from_filename(name) {
+                return lang;
+            }
+        }
         path.extension().and_then(|e| e.to_str()).map_or(Self::Plain, Self::from_extension)
     }
 
@@ -110,6 +127,7 @@ impl Language {
                 }
             }
             Self::Rust => rust::tokenize_line(line),
+            Self::Toml => toml::tokenize_line(line),
         }
     }
 }
@@ -125,6 +143,7 @@ mod tests {
     fn language_from_extension_covers_rs() {
         assert_eq!(Language::from_extension("rs"), Language::Rust);
         assert_eq!(Language::from_extension("RS"), Language::Rust);
+        assert_eq!(Language::from_extension("toml"), Language::Toml);
         assert_eq!(Language::from_extension("txt"), Language::Plain);
         assert_eq!(Language::from_extension(""), Language::Plain);
     }
@@ -133,6 +152,8 @@ mod tests {
     fn language_from_path_picks_extension() {
         use std::path::Path;
         assert_eq!(Language::from_path(Path::new("src/main.rs")), Language::Rust);
+        assert_eq!(Language::from_path(Path::new("Cargo.toml")), Language::Toml);
+        assert_eq!(Language::from_path(Path::new("Cargo.lock")), Language::Toml);
         assert_eq!(Language::from_path(Path::new("README.md")), Language::Plain);
         assert_eq!(Language::from_path(Path::new("LICENSE")), Language::Plain);
     }
