@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 editor-core       = { path = "../editor-core" }
+editor-diff       = { path = "../editor-diff" }
 editor-settings   = { path = "../editor-settings" }
 editor-search     = { path = "../editor-search" }
 editor-workspace  = { path = "../editor-workspace" }

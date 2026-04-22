@@ -11,10 +11,12 @@ pub mod breadcrumbs;
 pub mod chrome;
 pub mod command_palette;
 pub mod find_bar;
+pub mod gutter_marks;
 pub mod icons;
 pub mod keybindings;
 pub mod quick_open;
 pub mod quick_open_palette;
+pub mod scrollbar;
 pub mod search_panel;
 pub mod settings_panel;
 pub mod sidebar;
@@ -27,9 +29,11 @@ pub use breadcrumbs::{paint_breadcrumbs, BreadcrumbHit, BREADCRUMBS_HEIGHT};
 pub use chrome::{ChromeQuad, ChromeTextLine, FrameChrome};
 pub use command_palette::{CommandEntry, CommandPalette};
 pub use find_bar::FindBar;
+pub use gutter_marks::{compute_gutter_marks, paint_gutter_marks, GutterMark};
 pub use icons::{paint_icon, Icon};
 pub use quick_open::QuickOpenRanker;
 pub use quick_open_palette::QuickOpenPalette;
+pub use scrollbar::{paint_scrollbar, ScrollbarInput, ScrollbarMetrics, SCROLLBAR_WIDTH};
 pub use search_panel::SearchPanel;
 pub use settings_panel::{
     format_settings_overlay, AboutStrings, Section, SettingsPanelState, SkillRow,

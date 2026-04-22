@@ -450,6 +450,9 @@ fn run_windowed(
         find_bar: FindBar::default(),
         git_branch: None,
         git_last_refresh: Instant::now() - Duration::from_secs(10),
+        gutter_marks: Vec::new(),
+        gutter_marks_version: None,
+        gutter_marks_for_path: None,
     };
     app.clamp_cursor_to_buffer();
     app.seed_initial_buffer_into_manager();
@@ -538,6 +541,15 @@ struct App {
     // --- M18 light-touch git branch in the status bar --------------------------------
     git_branch: Option<String>,
     git_last_refresh: Instant,
+    // --- M17/M18 diff gutter cache ---------------------------------------------------
+    /// Per-line gutter marks for the active buffer (`None` slots = unchanged).
+    /// Recomputed when the buffer text version advances past `gutter_marks_version`.
+    gutter_marks: Vec<Option<editor_ui::GutterMark>>,
+    /// Text-buffer version that produced `gutter_marks`. `None` means "never computed".
+    gutter_marks_version: Option<u64>,
+    /// Path whose HEAD blob seeded `gutter_marks` — when the active buffer
+    /// changes to a different file we always recompute.
+    gutter_marks_for_path: Option<PathBuf>,
 }
 
 impl App {
@@ -1686,6 +1698,68 @@ impl App {
         abs.file_name().map(PathBuf::from)
     }
 
+    /// Recompute the per-line diff-vs-HEAD gutter marks **when** the active
+    /// buffer's text has advanced past the cached version. Cheap no-op in the
+    /// common "no edit this frame" case.
+    ///
+    /// Failures (no git repo, path not in HEAD, read errors) silently drop
+    /// the cache; the painter will simply skip drawing stripes.
+    fn refresh_gutter_marks_if_stale(&mut self) {
+        let version = self.buffer.version();
+        let total_lines = self.buffer.len_lines().max(1);
+        let path_matches = self.gutter_marks_for_path.as_deref() == self.open_path.as_deref();
+        if path_matches && self.gutter_marks_version == Some(version) {
+            return;
+        }
+        let Some(abs) = self.open_path.clone() else {
+            self.gutter_marks.clear();
+            self.gutter_marks_version = Some(version);
+            self.gutter_marks_for_path = None;
+            return;
+        };
+        let repo_root = self
+            .workspace_root()
+            .map(Path::to_path_buf)
+            .or_else(|| abs.parent().map(Path::to_path_buf));
+        let Some(start) = repo_root else {
+            self.gutter_marks.clear();
+            self.gutter_marks_version = Some(version);
+            self.gutter_marks_for_path = Some(abs);
+            return;
+        };
+        let repo = match GitRepo::discover(&start) {
+            Ok(Some(r)) => r,
+            _ => {
+                self.gutter_marks.clear();
+                self.gutter_marks_version = Some(version);
+                self.gutter_marks_for_path = Some(abs);
+                return;
+            }
+        };
+        // Use the gix-reported workdir so we compute the proper relative path
+        // even when the app's workspace root sits at a subdirectory of the repo.
+        let rel = match abs.strip_prefix(repo.workdir()) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => {
+                self.gutter_marks.clear();
+                self.gutter_marks_version = Some(version);
+                self.gutter_marks_for_path = Some(abs);
+                return;
+            }
+        };
+        let text = self.buffer.to_text();
+        let hunks = match repo.line_diff_vs_head(&rel, &text) {
+            Ok(h) => h,
+            Err(e) => {
+                debug!(?rel, error = %e, "diff-vs-HEAD failed; clearing gutter marks");
+                Vec::new()
+            }
+        };
+        self.gutter_marks = editor_ui::compute_gutter_marks(&hunks, total_lines);
+        self.gutter_marks_version = Some(version);
+        self.gutter_marks_for_path = Some(abs);
+    }
+
     /// Map physical window pixel to a UTF-8 boundary byte offset (M09; matches `editor-render` layout).
     fn hit_test_byte(&self, x_px: f64, y_px: f64) -> Option<BytePos> {
         let renderer = self.renderer.as_ref()?;
@@ -2158,7 +2232,9 @@ impl App {
     /// Build sidebar + tab strip + quick-open chrome for the current frame.
     /// Returns (Some(chrome), sidebar_width_px, tab_strip_height_px, tab_hits) when any
     /// surface is visible, else (None, 0, 0, []) so the renderer can skip chrome entirely.
-    fn build_frame_chrome(&self) -> (Option<FrameChrome>, f32, f32, Vec<TabHit>) {
+    fn build_frame_chrome(&mut self) -> (Option<FrameChrome>, f32, f32, Vec<TabHit>) {
+        // Diff-vs-HEAD cache is version-gated; cheap no-op when stable.
+        self.refresh_gutter_marks_if_stale();
         let Some(window) = self.window.as_ref() else {
             return (None, 0.0, 0.0, Vec::new());
         };
@@ -2241,6 +2317,48 @@ impl App {
                 strip_w,
                 rel.as_deref(),
             );
+        }
+
+        // Vertical scrollbar (always painted when the doc overflows the viewport).
+        if let Some(renderer) = self.renderer.as_ref() {
+            let line_h = renderer.line_height_px();
+            let input = editor_ui::ScrollbarInput {
+                total_lines: self.buffer.len_lines().max(1),
+                scroll_y_px: self.scroll.y_px,
+                line_height_px: line_h,
+                content_right_px: physical.width as f32,
+                content_top_px: inset_top_px,
+                content_bottom_px: (physical.height as f32 - status_h - term_h).max(inset_top_px),
+                scale,
+            };
+            let _ = editor_ui::paint_scrollbar(&mut chrome, input);
+        }
+
+        // Diff marks: colored stripes at the left edge of the gutter showing
+        // +/~/- vs HEAD. Cache is pre-refreshed at render-time; see the
+        // request_redraw() path for `refresh_gutter_marks_if_stale`.
+        if let Some(renderer) = self.renderer.as_ref() {
+            if !self.gutter_marks.is_empty() {
+                let line_h = renderer.line_height_px();
+                let total = self.buffer.len_lines().max(1);
+                let first = (self.scroll.y_px / line_h).floor().max(0.0) as usize;
+                let viewport_h =
+                    (physical.height as f32 - status_h - term_h - inset_top_px).max(0.0);
+                let visible = (viewport_h / line_h).ceil() as usize + 2;
+                let last = (first + visible).min(total);
+                let row_top_px = inset_top_px + 4.0 + (first as f32 * line_h - self.scroll.y_px);
+                // Stripe sits just inside the left chrome edge (before the line numbers).
+                let stripe_left = inset_left_px + 2.0 * scale;
+                editor_ui::paint_gutter_marks(
+                    &mut chrome,
+                    &self.gutter_marks,
+                    first..last,
+                    stripe_left,
+                    row_top_px,
+                    line_h,
+                    scale,
+                );
+            }
         }
 
         // Find bar: backdrop + highlight quads for visible matches + overlay text.

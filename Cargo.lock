@@ -1302,6 +1302,7 @@ name = "editor-ui"
 version = "0.1.0-mvp"
 dependencies = [
  "editor-core",
+ "editor-diff",
  "editor-search",
  "editor-settings",
  "editor-workspace",
