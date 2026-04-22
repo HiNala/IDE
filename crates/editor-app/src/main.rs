@@ -1341,6 +1341,115 @@ impl App {
         }
     }
 
+    /// Handle a key press when the sidebar has keyboard focus. Returns `true`
+    /// when the sidebar consumed the event (caller should not dispatch further).
+    ///
+    /// Keys: **↑/↓** move the highlight; **←** collapses or walks to the parent;
+    /// **→** expands a directory; **Enter / Space** opens a file or toggles a
+    /// directory; **Home/End** jump to first/last row; **PageUp/PageDown** step
+    /// by a viewport; **Esc** defocuses back into the editor.
+    fn handle_sidebar_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        if !self.sidebar.focused || !self.sidebar.visible {
+            return false;
+        }
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return false;
+        };
+        // A rough "rows per page" estimate for PageUp/PageDown.
+        let page = {
+            let row_h = editor_ui::sidebar::ROW_LINE_HEIGHT.max(1.0);
+            let header_h = editor_ui::sidebar::HEADER_HEIGHT;
+            let status_h = self.status_bar_height_px() / self.scale_factor;
+            let term_h = self.terminal_pane_height_px() / self.scale_factor;
+            let h_logical = self
+                .window
+                .as_ref()
+                .map(|w| {
+                    w.inner_size().height as f32 / self.scale_factor - header_h - status_h - term_h
+                })
+                .unwrap_or(240.0)
+                .max(row_h * 4.0);
+            (h_logical / row_h).floor().max(1.0) as isize
+        };
+        match code {
+            KeyCode::Escape => {
+                self.sidebar.focused = false;
+                self.request_redraw();
+                true
+            }
+            KeyCode::ArrowUp => {
+                self.sidebar.move_highlight(-1);
+                self.request_redraw();
+                true
+            }
+            KeyCode::ArrowDown => {
+                self.sidebar.move_highlight(1);
+                self.request_redraw();
+                true
+            }
+            KeyCode::PageUp => {
+                self.sidebar.move_highlight(-page);
+                self.request_redraw();
+                true
+            }
+            KeyCode::PageDown => {
+                self.sidebar.move_highlight(page);
+                self.request_redraw();
+                true
+            }
+            KeyCode::Home => {
+                self.sidebar.highlight_first();
+                self.request_redraw();
+                true
+            }
+            KeyCode::End => {
+                self.sidebar.highlight_last();
+                self.request_redraw();
+                true
+            }
+            KeyCode::ArrowRight => {
+                if self.sidebar.expand_highlighted() {
+                    self.sidebar.rebuild_flat(&self.workspace_entries);
+                }
+                self.request_redraw();
+                true
+            }
+            KeyCode::ArrowLeft => {
+                self.sidebar.collapse_or_parent();
+                self.sidebar.rebuild_flat(&self.workspace_entries);
+                self.request_redraw();
+                true
+            }
+            KeyCode::Enter | KeyCode::Space => {
+                self.activate_highlighted_sidebar_row();
+                self.request_redraw();
+                true
+            }
+            _ => {
+                // Swallow plain typing so it doesn't leak into the active buffer.
+                // Ctrl/Alt/Super combos still fall through so global shortcuts work.
+                let m = self.modifiers;
+                !(m.control_key() || m.alt_key() || m.super_key())
+            }
+        }
+    }
+
+    /// Enter/Space on a directory toggles it; on a file, opens it in a new tab.
+    fn activate_highlighted_sidebar_row(&mut self) {
+        let Some(rel) = self.sidebar.highlighted.clone() else { return };
+        let Some(row) = self.sidebar.flat_rows().iter().find(|r| r.rel == rel).cloned() else {
+            return;
+        };
+        if row.is_dir {
+            self.sidebar.toggle_dir(&row.rel);
+            self.sidebar.rebuild_flat(&self.workspace_entries);
+        } else if let Some(root) = self.workspace_root() {
+            let abs = root.join(&row.rel);
+            self.open_path_as_buffer(&abs);
+        }
+    }
+
     /// Handle a key press when the quick-open palette is active.
     /// Returns `true` when the palette consumed the event (caller should not dispatch further).
     fn handle_quick_open_key(&mut self, event: &winit::event::KeyEvent) -> bool {
@@ -1490,10 +1599,14 @@ impl App {
         // Sidebar clicks (right of the activity bar, when visible).
         let chrome_left_w = self.left_chrome_width_px() as f64;
         if self.sidebar.visible && x < chrome_left_w {
+            // A click anywhere in the sidebar column gives it keyboard focus.
+            self.sidebar.focused = true;
+            self.terminal_focus = false;
             // Subtract the header so the row index calculation is relative to the rows area.
             let rows_top = editor_ui::sidebar::HEADER_HEIGHT * self.scale_factor;
             if let Some(idx) = self.sidebar.row_index_at_y(y as f32, self.scale_factor, rows_top) {
                 let row = self.sidebar.flat_rows()[idx].clone();
+                self.sidebar.highlighted = Some(row.rel.clone());
                 if row.is_dir {
                     self.sidebar.toggle_dir(&row.rel);
                     self.sidebar.rebuild_flat(&self.workspace_entries);
@@ -1542,6 +1655,7 @@ impl App {
             return;
         }
         self.terminal_focus = false;
+        self.sidebar.focused = false;
         let Some(byte) = self.hit_test_byte(x, y) else {
             return;
         };
@@ -2771,6 +2885,9 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 if self.quick_open.visible && self.handle_quick_open_key(&event) {
                     self.request_redraw();
+                    return;
+                }
+                if self.handle_sidebar_key(&event) {
                     return;
                 }
                 if let Some(cmd) = map_key_event(&event, self.modifiers) {

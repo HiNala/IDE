@@ -159,6 +159,101 @@ impl Sidebar {
         self.expanded_dirs.contains(&rel.to_path_buf())
     }
 
+    /// Index of the currently-highlighted row, if any.
+    #[must_use]
+    pub fn highlighted_index(&self) -> Option<usize> {
+        let rel = self.highlighted.as_ref()?;
+        self.flat_rows.iter().position(|r| &r.rel == rel)
+    }
+
+    /// Move the keyboard highlight by `delta` rows (positive = down). Clamps to the
+    /// visible row range. If nothing is highlighted yet, seeds at the first row.
+    ///
+    /// Returns the new index when it changed, `None` when no movement was possible
+    /// (empty tree or already clamped at the requested edge).
+    pub fn move_highlight(&mut self, delta: isize) -> Option<usize> {
+        if self.flat_rows.is_empty() {
+            self.highlighted = None;
+            return None;
+        }
+        let last = self.flat_rows.len() - 1;
+        let current = self.highlighted_index();
+        let next = match current {
+            Some(i) => {
+                let target = (i as isize + delta).clamp(0, last as isize) as usize;
+                if target == i {
+                    return None;
+                }
+                target
+            }
+            None => {
+                if delta >= 0 {
+                    0
+                } else {
+                    last
+                }
+            }
+        };
+        self.highlighted = Some(self.flat_rows[next].rel.clone());
+        Some(next)
+    }
+
+    /// Jump to the first / last visible row. Returns the new index if it changed.
+    pub fn highlight_first(&mut self) -> Option<usize> {
+        let first = self.flat_rows.first()?;
+        let idx = 0;
+        if self.highlighted_index() == Some(idx) {
+            return None;
+        }
+        self.highlighted = Some(first.rel.clone());
+        Some(idx)
+    }
+
+    /// Jump to the last visible row. Returns the new index if it changed.
+    pub fn highlight_last(&mut self) -> Option<usize> {
+        let last_idx = self.flat_rows.len().checked_sub(1)?;
+        if self.highlighted_index() == Some(last_idx) {
+            return None;
+        }
+        self.highlighted = Some(self.flat_rows[last_idx].rel.clone());
+        Some(last_idx)
+    }
+
+    /// Expand the highlighted directory (or no-op for files / already-expanded).
+    /// Returns `true` if an expansion actually happened.
+    pub fn expand_highlighted(&mut self) -> bool {
+        let Some(rel) = self.highlighted.as_ref() else { return false };
+        let Some(row) = self.flat_rows.iter().find(|r| &r.rel == rel) else { return false };
+        if !row.is_dir || self.is_expanded(&row.rel) {
+            return false;
+        }
+        self.expanded_dirs.insert(row.rel.clone());
+        true
+    }
+
+    /// Collapse the highlighted directory, or move the highlight to the parent when
+    /// the row is already collapsed / is a file. Returns the new highlighted path
+    /// when the highlight moved, or `None` when the action was a collapse or no-op.
+    pub fn collapse_or_parent(&mut self) -> Option<PathBuf> {
+        let rel = self.highlighted.as_ref()?.clone();
+        let row_is_open_dir = self
+            .flat_rows
+            .iter()
+            .find(|r| r.rel == rel)
+            .is_some_and(|r| r.is_dir && self.is_expanded(&r.rel));
+        if row_is_open_dir {
+            self.expanded_dirs.remove(&rel);
+            return None;
+        }
+        // Move to parent directory if there is one.
+        let parent = rel.parent()?.to_path_buf();
+        if parent.as_os_str().is_empty() {
+            return None;
+        }
+        self.highlighted = Some(parent.clone());
+        Some(parent)
+    }
+
     /// Row index at window Y, or None. `origin_y` is the top of the **rows area**
     /// (header already accounted for by the caller).
     pub fn row_index_at_y(&self, y_px: f32, scale: f32, origin_y: f32) -> Option<usize> {
@@ -289,5 +384,103 @@ mod tests {
         s.reveal_path(Path::new("a/b/c.rs"));
         assert!(s.expanded_dirs.contains(&PathBuf::from("a")));
         assert!(s.expanded_dirs.contains(&PathBuf::from("a/b")));
+    }
+
+    fn row(rel: &str, is_dir: bool, depth: u16) -> FlatRow {
+        FlatRow {
+            rel: PathBuf::from(rel),
+            depth,
+            is_dir,
+            label: rel.rsplit('/').next().unwrap_or(rel).to_string(),
+            has_children: is_dir,
+        }
+    }
+
+    fn sb_with_rows() -> Sidebar {
+        let mut s = Sidebar::new();
+        s.flat_rows = vec![
+            row("a", true, 0),
+            row("a/b.rs", false, 1),
+            row("c", true, 0),
+            row("c/d.rs", false, 1),
+        ];
+        // Expand "a" + "c" so their children appear as real rows in this fixture.
+        s.expanded_dirs.insert(PathBuf::from("a"));
+        s.expanded_dirs.insert(PathBuf::from("c"));
+        s
+    }
+
+    #[test]
+    fn move_highlight_seeds_from_top_on_first_down() {
+        let mut s = sb_with_rows();
+        assert_eq!(s.move_highlight(1), Some(0));
+        assert_eq!(s.highlighted, Some(PathBuf::from("a")));
+    }
+
+    #[test]
+    fn move_highlight_seeds_from_bottom_on_first_up() {
+        let mut s = sb_with_rows();
+        assert_eq!(s.move_highlight(-1), Some(3));
+        assert_eq!(s.highlighted, Some(PathBuf::from("c/d.rs")));
+    }
+
+    #[test]
+    fn move_highlight_clamps_at_edges() {
+        let mut s = sb_with_rows();
+        s.highlighted = Some(PathBuf::from("a"));
+        // Already at top: no move.
+        assert_eq!(s.move_highlight(-1), None);
+        s.highlighted = Some(PathBuf::from("c/d.rs"));
+        // Already at bottom: no move.
+        assert_eq!(s.move_highlight(1), None);
+    }
+
+    #[test]
+    fn move_highlight_steps_by_delta() {
+        let mut s = sb_with_rows();
+        s.highlighted = Some(PathBuf::from("a"));
+        assert_eq!(s.move_highlight(2), Some(2));
+        assert_eq!(s.highlighted, Some(PathBuf::from("c")));
+    }
+
+    #[test]
+    fn first_and_last_helpers() {
+        let mut s = sb_with_rows();
+        assert_eq!(s.highlight_last(), Some(3));
+        assert_eq!(s.highlighted, Some(PathBuf::from("c/d.rs")));
+        assert_eq!(s.highlight_first(), Some(0));
+        assert_eq!(s.highlighted, Some(PathBuf::from("a")));
+        // No-op when already there.
+        assert_eq!(s.highlight_first(), None);
+    }
+
+    #[test]
+    fn expand_only_applies_to_collapsed_dirs() {
+        let mut s = sb_with_rows();
+        // Seed with a collapsed directory: remove "a" from expanded set.
+        s.expanded_dirs.remove(&PathBuf::from("a"));
+        s.highlighted = Some(PathBuf::from("a"));
+        assert!(s.expand_highlighted());
+        assert!(s.is_expanded(Path::new("a")));
+        // Second call is a no-op because the dir is already expanded.
+        assert!(!s.expand_highlighted());
+        // Files never expand.
+        s.highlighted = Some(PathBuf::from("a/b.rs"));
+        assert!(!s.expand_highlighted());
+    }
+
+    #[test]
+    fn collapse_or_parent_collapses_open_dir_then_walks_up() {
+        let mut s = sb_with_rows();
+        s.highlighted = Some(PathBuf::from("a"));
+        // First call collapses "a" and keeps highlight.
+        assert_eq!(s.collapse_or_parent(), None);
+        assert!(!s.is_expanded(Path::new("a")));
+        // Second call on an already-collapsed top-level dir has no parent to walk to.
+        assert_eq!(s.collapse_or_parent(), None);
+        // On a file, walks up to the parent directory.
+        s.highlighted = Some(PathBuf::from("c/d.rs"));
+        assert_eq!(s.collapse_or_parent(), Some(PathBuf::from("c")));
+        assert_eq!(s.highlighted, Some(PathBuf::from("c")));
     }
 }
