@@ -20,8 +20,6 @@ workspace = true
 [dependencies]
 editor-core = { path = "../editor-core" }
 winit       = { workspace = true }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

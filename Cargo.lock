@@ -1047,8 +1047,6 @@ dependencies = [
  "directories",
  "futures",
  "keyring",
- "pollster",
- "rand 0.8.6",
  "reqwest",
  "serde",
  "serde_json",
@@ -1083,7 +1081,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
- "tracing",
 ]
 
 [[package]]
@@ -1101,6 +1098,7 @@ dependencies = [
  "editor-input",
  "editor-io",
  "editor-render",
+ "editor-search",
  "editor-settings",
  "editor-skills",
  "editor-terminal",
@@ -1163,7 +1161,6 @@ dependencies = [
  "editor-workspace",
  "globset",
  "ignore",
- "regex",
  "reqwest",
  "rusqlite",
  "serde",
@@ -1173,10 +1170,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
- "tracing",
  "tree-sitter",
  "tree-sitter-rust",
- "url",
 ]
 
 [[package]]
@@ -1185,8 +1180,6 @@ version = "0.1.0-mvp"
 dependencies = [
  "criterion",
  "editor-core",
- "thiserror 2.0.18",
- "tracing",
  "winit",
 ]
 
@@ -1231,7 +1224,6 @@ name = "editor-render"
 version = "0.1.0-mvp"
 dependencies = [
  "bytemuck",
- "cosmic-text",
  "criterion",
  "editor-core",
  "editor-diff",
@@ -1239,7 +1231,6 @@ dependencies = [
  "editor-ui",
  "glyphon",
  "pollster",
- "raw-window-handle",
  "ropey",
  "static_assertions",
  "thiserror 2.0.18",
@@ -1256,14 +1247,12 @@ dependencies = [
  "crossbeam-channel",
  "editor-core",
  "editor-workspace",
- "grep-matcher",
  "grep-regex",
  "grep-searcher",
  "ignore",
  "regex",
  "tempfile",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -1317,8 +1306,6 @@ dependencies = [
  "editor-settings",
  "editor-workspace",
  "nucleo",
- "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]

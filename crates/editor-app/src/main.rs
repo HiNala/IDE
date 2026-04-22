@@ -11,6 +11,7 @@
 
 mod config;
 mod metrics;
+mod perf_smoke;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -245,7 +246,9 @@ fn run() -> Result<(), ExitCode> {
             print_help();
             return Ok(());
         }
-        if a.starts_with("--") && !matches!(a.as_str(), "--dry-run" | "--log-json" | "--dev-hud") {
+        if a.starts_with("--")
+            && !matches!(a.as_str(), "--dry-run" | "--perf-smoke" | "--log-json" | "--dev-hud")
+        {
             eprintln!("editor-app: unknown option: {a}");
             return Err(ExitCode::from(64));
         }
@@ -255,6 +258,14 @@ fn run() -> Result<(), ExitCode> {
 
     if args.iter().any(|a| a == "--dry-run") {
         if let Err(e) = run_dry_run() {
+            eprintln!("{e:#}");
+            return Err(ExitCode::FAILURE);
+        }
+        return Ok(());
+    }
+
+    if args.iter().any(|a| a == "--perf-smoke") {
+        if let Err(e) = perf_smoke::run() {
             eprintln!("{e:#}");
             return Err(ExitCode::FAILURE);
         }
@@ -2730,7 +2741,9 @@ impl ApplicationHandler<AppEvent> for App {
                         if !text.is_empty() {
                             let slot = self.active_terminal_slot_idx();
                             if let Some(ref mut t) = self.terminals[slot] {
-                                let _ = t.write_bytes(text.as_bytes());
+                                if let Err(e) = t.write_bytes(text.as_bytes()) {
+                                    warn!(slot, error = %e, "terminal IME write failed");
+                                }
                             }
                         }
                         self.request_redraw();

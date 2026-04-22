@@ -23,8 +23,6 @@ editor-settings   = { path = "../editor-settings" }
 editor-search     = { path = "../editor-search" }
 editor-workspace  = { path = "../editor-workspace" }
 nucleo            = { workspace = true }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
 
 [features]
 default = []
