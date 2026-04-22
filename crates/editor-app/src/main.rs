@@ -1658,6 +1658,34 @@ impl App {
         }
     }
 
+    /// Breadcrumbs strip height in physical px — painted when a tab strip is
+    /// visible AND the active buffer has a displayable path.
+    fn breadcrumbs_height_px(&self) -> f32 {
+        if self.buffers.is_empty() || self.active_path_rel().is_none() {
+            0.0
+        } else {
+            editor_ui::BREADCRUMBS_HEIGHT * self.scale_factor
+        }
+    }
+
+    /// Total height of top chrome (tabstrip + breadcrumbs) — used by mouse
+    /// hit-testing to offset the editor canvas.
+    fn top_chrome_height_px(&self) -> f32 {
+        self.tabstrip_height_px() + self.breadcrumbs_height_px()
+    }
+
+    /// Workspace-relative path of the active buffer, or its `file_name()` when
+    /// no workspace is open, or `None` for untitled buffers.
+    fn active_path_rel(&self) -> Option<PathBuf> {
+        let abs = self.open_path.as_ref()?;
+        if let Some(root) = self.workspace_root() {
+            if let Ok(rel) = abs.strip_prefix(root) {
+                return Some(rel.to_path_buf());
+            }
+        }
+        abs.file_name().map(PathBuf::from)
+    }
+
     /// Map physical window pixel to a UTF-8 boundary byte offset (M09; matches `editor-render` layout).
     fn hit_test_byte(&self, x_px: f64, y_px: f64) -> Option<BytePos> {
         let renderer = self.renderer.as_ref()?;
@@ -1667,11 +1695,11 @@ impl App {
         let status_h = self.status_bar_height_px();
         let term_h = self.terminal_pane_height_px();
         let chrome_left_w = self.left_chrome_width_px();
-        let tab_h = self.tabstrip_height_px();
+        let top_h = self.top_chrome_height_px();
         let (gutter_w, char_w) =
             editor_render::compute_gutter_width_px(self.buffer.len_lines(), self.scale_factor);
         let content_bottom = physical.height as f32 - status_h - term_h;
-        if y_px < tab_h as f64 || y_px >= content_bottom as f64 {
+        if y_px < top_h as f64 || y_px >= content_bottom as f64 {
             return None;
         }
         if x_px < chrome_left_w as f64 {
@@ -1681,7 +1709,7 @@ impl App {
         if total_lines == 0 {
             return Some(BytePos(0));
         }
-        let y_rel = y_px as f32 - tab_h;
+        let y_rel = y_px as f32 - top_h;
         let line_idx_f = (y_rel - 4.0 + self.scroll.y_px) / line_h;
         let mut line_idx = line_idx_f.floor() as isize;
         if line_idx < 0 {
@@ -2139,13 +2167,18 @@ impl App {
 
         let sidebar_on = self.sidebar.visible;
         let tabstrip_on = !self.buffers.is_empty();
+        let breadcrumbs_on = tabstrip_on && self.active_path_rel().is_some();
         let find_on = self.find_bar.visible;
 
         let mut chrome = FrameChrome::new();
         let activity_w = ACTIVITY_BAR_WIDTH * scale;
         let sidebar_w = if sidebar_on { self.sidebar.width * scale } else { 0.0 };
         let inset_left_px = activity_w + sidebar_w;
-        let inset_top_px = if tabstrip_on { TAB_STRIP_HEIGHT * scale } else { 0.0 };
+        let tab_top_px = if tabstrip_on { TAB_STRIP_HEIGHT * scale } else { 0.0 };
+        let breadcrumbs_top_px = tab_top_px;
+        let breadcrumbs_height_px =
+            if breadcrumbs_on { editor_ui::BREADCRUMBS_HEIGHT * scale } else { 0.0 };
+        let inset_top_px = tab_top_px + breadcrumbs_height_px;
 
         let status_h = self.status_bar_height_px();
         let term_h = self.terminal_pane_height_px();
@@ -2193,6 +2226,20 @@ impl App {
                 0.0,
                 0.0,
                 strip_w,
+            );
+        }
+
+        // Breadcrumbs strip directly under the tab strip.
+        if breadcrumbs_on {
+            let strip_w = (physical.width as f32 - inset_left_px).max(0.0);
+            let rel = self.active_path_rel();
+            let _ = editor_ui::paint_breadcrumbs(
+                &mut chrome,
+                scale,
+                inset_left_px,
+                breadcrumbs_top_px,
+                strip_w,
+                rel.as_deref(),
             );
         }
 
