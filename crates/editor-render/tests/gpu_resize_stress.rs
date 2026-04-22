@@ -50,6 +50,7 @@ fn paint_resize_frame(
         selection_byte_range: None,
         diff: None,
         terminal_pane_height_px: 0.0,
+        terminal_header_height_px: 0.0,
         terminal_snapshot: None,
         settings_overlay_lines: None,
         frame_chrome: None,

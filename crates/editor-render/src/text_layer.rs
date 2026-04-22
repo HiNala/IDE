@@ -122,6 +122,7 @@ fn push_terminal_text_areas<'a>(
     scale_factor: f32,
     status_h: f32,
     terminal_pane_height_px: f32,
+    terminal_header_height_px: f32,
     line_h: f32,
     content_inset_left_px: f32,
 ) {
@@ -132,7 +133,9 @@ fn push_terminal_text_areas<'a>(
     debug_assert_eq!(run_count, bufs.len(), "terminal buffers must match snapshot runs");
     let (gutter_w, char_w) = compute_gutter_width_px(snapshot.rows.len().max(1), scale_factor);
     let body_left = content_inset_left_px + 8.0 + gutter_w;
-    let term_top = physical_size.height as f32 - status_h - terminal_pane_height_px + 4.0;
+    let term_top = physical_size.height as f32 - status_h - terminal_pane_height_px
+        + terminal_header_height_px
+        + 4.0;
     let w = physical_size.width as i32;
     let h = physical_size.height as i32;
     let term_clip_top = term_top.round().max(0.0) as i32;
@@ -452,6 +455,7 @@ impl TextLayer {
         status_bar: Option<&StatusBarLayout>,
         dev_hud_line: Option<&str>,
         terminal_pane_height_px: f32,
+        terminal_header_height_px: f32,
         terminal_snapshot: Option<&TerminalRenderSnapshot>,
         settings_overlay: Option<&[String]>,
         frame_chrome: Option<&FrameChrome>,
@@ -567,6 +571,7 @@ impl TextLayer {
                 self.scale_factor,
                 status_h,
                 term_h,
+                terminal_header_height_px,
                 line_h,
                 content_inset_left_px,
             );
@@ -667,6 +672,7 @@ impl TextLayer {
                         self.scale_factor,
                         status_h,
                         term_h,
+                        terminal_header_height_px,
                         line_h,
                         content_inset_left_px,
                     );

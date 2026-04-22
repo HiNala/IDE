@@ -22,6 +22,7 @@ pub mod settings_panel;
 pub mod sidebar;
 pub mod status_bar;
 pub mod tab_strip;
+pub mod terminal_header;
 pub mod theme;
 
 pub use activity_bar::{paint_activity_bar, ActivityIcon, ACTIVITY_BAR_WIDTH};
@@ -41,6 +42,7 @@ pub use settings_panel::{
 pub use sidebar::{FlatRow, Sidebar, DEFAULT_SIDEBAR_WIDTH, ROW_LINE_HEIGHT};
 pub use status_bar::{SourceEncoding, StatusBarInfo, StatusBarInfoRef, StatusBarLayout};
 pub use tab_strip::{paint_tab_strip, tab_label, TabHit, TAB_STRIP_HEIGHT};
+pub use terminal_header::{paint_terminal_header, TerminalHeaderHits, TERMINAL_HEADER_HEIGHT};
 pub use theme::{palette, spacing, typography};
 
 /// Crate version string, sourced from `Cargo.toml` at compile time.

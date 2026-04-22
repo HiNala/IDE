@@ -62,6 +62,7 @@ fn text_layer_prepare_smoke_large_buffer() {
             None,
             None,
             0.0,
+            0.0,
             None,
             None,
             None,

@@ -453,6 +453,7 @@ fn run_windowed(
         gutter_marks: Vec::new(),
         gutter_marks_version: None,
         gutter_marks_for_path: None,
+        terminal_header_hits: None,
     };
     app.clamp_cursor_to_buffer();
     app.seed_initial_buffer_into_manager();
@@ -550,6 +551,10 @@ struct App {
     /// Path whose HEAD blob seeded `gutter_marks` — when the active buffer
     /// changes to a different file we always recompute.
     gutter_marks_for_path: Option<PathBuf>,
+    /// Terminal-pane header hit region from the last painted frame; `None`
+    /// when the pane is hidden. Used by mouse routing to detect clicks on
+    /// the "Terminal" strip (close button + focus swallow).
+    terminal_header_hits: Option<editor_ui::TerminalHeaderHits>,
 }
 
 impl App {
@@ -602,8 +607,10 @@ impl App {
         let body_left = 8.0 + gutter_w;
         let pw = w.inner_size().width as f32;
         let term_h = self.terminal_pane_height_px();
+        let header_h = editor_ui::TERMINAL_HEADER_HEIGHT * self.scale_factor;
+        let usable_h = (term_h - header_h).max(line_h);
         let cols = ((pw - body_left) / char_w.max(1e-6)).floor().max(1.0) as u16;
-        let rows = (term_h / line_h).floor().max(1.0) as u16;
+        let rows = (usable_h / line_h).floor().max(1.0) as u16;
         let cw = char_w.round().max(1.0) as u16;
         let ch = line_h.round().max(1.0) as u16;
         Some((cols, rows, cw, ch))
@@ -1892,6 +1899,27 @@ impl App {
             return;
         }
 
+        // Terminal pane header: close button + header-wide focus swallow.
+        // Checked before PTY focus so the strip feels like chrome, not content.
+        if self.terminal_pane_visible {
+            if let Some(hits) = self.terminal_header_hits {
+                let xf = x as f32;
+                let yf = y as f32;
+                if hits.pointer_on_close(xf, yf) {
+                    let _ = self.apply_editor_command(EditorCommand::ToggleTerminalPane);
+                    self.request_redraw();
+                    return;
+                }
+                if hits.pointer_on_header(xf, yf) {
+                    // Click lands on the header background (future drag-to-resize
+                    // anchor). Don't hand focus to the PTY; don't fall through to
+                    // the editor text either.
+                    self.terminal_focus = false;
+                    return;
+                }
+            }
+        }
+
         if self.terminal_pane_visible && self.pointer_in_terminal_pane(y) {
             self.terminal_focus = true;
             return;
@@ -2202,6 +2230,11 @@ impl App {
                 selection_byte_range,
                 diff: None,
                 terminal_pane_height_px,
+                terminal_header_height_px: if terminal_pane_height_px > 0.5 {
+                    editor_ui::TERMINAL_HEADER_HEIGHT * self.scale_factor
+                } else {
+                    0.0
+                },
                 terminal_snapshot: term_snap_owned,
                 settings_overlay_lines: self.settings_overlay_lines.as_deref(),
                 frame_chrome: chrome_opt.as_ref(),
@@ -2364,6 +2397,30 @@ impl App {
                 );
             }
         }
+
+        // Terminal pane header: thin strip with "Terminal" label + close button.
+        // Sits at the TOP of the pane so PTY rows render below it (renderer
+        // shifts them by `terminal_header_height_px` via FrameInput).
+        self.terminal_header_hits = if self.terminal_pane_visible {
+            let pane_h = self.terminal_pane_height_px();
+            if pane_h > 0.5 {
+                let pane_top = physical.height as f32 - status_h - pane_h;
+                // Pane spans the activity-bar's right edge to the window edge.
+                let pane_left = inset_left_px;
+                let pane_width = (physical.width as f32 - pane_left).max(0.0);
+                Some(editor_ui::paint_terminal_header(
+                    &mut chrome,
+                    scale,
+                    pane_left,
+                    pane_top,
+                    pane_width,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Find bar: backdrop + highlight quads for visible matches + overlay text.
         if find_on {

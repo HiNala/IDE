@@ -44,6 +44,10 @@ pub struct FrameInput<'a> {
     pub diff: Option<DiffPaint<'a>>,
     /// Height reserved at the bottom for the integrated terminal (M26). `0.0` hides the pane.
     pub terminal_pane_height_px: f32,
+    /// Height of the terminal pane's header strip (drawn by `editor-ui::terminal_header`).
+    /// Pulls the PTY rows down by this many physical pixels so the label + close button
+    /// sit above the shell output. `0.0` disables the offset (backwards compatible).
+    pub terminal_header_height_px: f32,
     /// Pre-shaped terminal grid (PTY + alacritty). `None` when the pane is hidden or not ready.
     pub terminal_snapshot: Option<editor_terminal::TerminalRenderSnapshot>,
     /// When set, replaces the document view with a full-window settings overlay (M28).
@@ -181,6 +185,7 @@ impl EditorRenderer {
             status_bar.as_ref(),
             dev_hud,
             term_h,
+            input.terminal_header_height_px,
             input.terminal_snapshot.as_ref(),
             input.settings_overlay_lines,
             input.frame_chrome,
