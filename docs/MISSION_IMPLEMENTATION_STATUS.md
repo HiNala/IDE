@@ -36,7 +36,7 @@
 | **M13** | Workspace & multi-buffer | **Done (code)** | `editor-workspace` crate: `Workspace`, `BufferManager` (MRU), `FileSystemEvent` (notify). Wired in `editor-app`. Coherence tests in `crates/editor-workspace/tests/m13_coherence.rs`. Workspace FS events flag `external_modified` on matching buffers. | Buffer-switch does not preserve `UndoStack` history (documented in `FOLLOWUPS.md`). |
 | **M14** | Sidebar, tabs, quick open | **Done (code)** | `editor-ui::{Sidebar, TabStrip, QuickOpenPalette, CommandPalette}` painted via `FrameChrome`. `Ctrl+B` / `Ctrl+Shift+E` / `Ctrl+P` / `Ctrl+Shift+P` / `Ctrl+Tab` / `Ctrl+W` / `Ctrl+N` wired. Sidebar keyboard navigation (`Up/Down/Home/End/PageUp/PageDown`, `Left`/`Right` collapse/expand, `Enter/Space` activate, `Esc` defocus). Tab close X + dirty dot are rect-based icons. Breadcrumbs strip under the tab bar. Mouse routing respects chrome zones. Keyboard intercept while any palette visible. Sidebar width/visibility persist. `editor-app <dir>` auto-opens workspace. | Explicit `Ctrl+K Ctrl+O` keybinding for folder-open; dirty-guard dialog on `Ctrl+W`; clickable breadcrumb navigation. |
 | **M15** | Syntax highlighting | **Done (code)** | `editor-syntax` crate: hand-written single-line lexers for Rust, TOML, JSON (+ JSONC / JSON5), Markdown. `LineState` carrier threads Rust's nested `/* ... */` across lines (2048-line prelude scan in `fill_visible_lines`). `editor-render::TextLayer` shapes colored runs via `cosmic_text::Buffer::set_rich_text`. Theme exposes 9 syntax slots; colors mapped per `TokenKind`. `Language::from_path` auto-detects via extension + well-known filenames (`Cargo.lock`, `rust-toolchain`). 60 crate tests. | `tree-sitter` backend behind the same `Language` contract; grammars for TS/JS/Python/HTML/CSS/YAML; semantic tokens beyond pure lexical classes (e.g. variable vs type resolution). |
-| **M16** | Find / Replace | **Library only** | `editor-search::{in_file, project}` matchers (regex + literal); `editor-ui::find_bar` text state. | `Ctrl+F` UI in `editor-app`, match highlights painted via `FrameChrome`, `Ctrl+H` replace, project-wide results panel. |
+| **M16** | Find / Replace | **Done (code)** | `editor-search::{in_file, project}` matchers (regex + literal). `editor-ui::FindBar` holds query/replace state, flags, matches, regex error. `editor-app` wires `Ctrl+F` / `Ctrl+H` / `F3` / `Shift+F3` via `EditorCommand::{FindInFile, ReplaceInFile, FindNext, FindPrev}`; `paint_find_bar_into_chrome` paints semi-transparent per-match highlights, a dark backdrop strip, and an overlay with find/replace fields + match count. IME commits route to the focused field; caret jumps to the current match and scrolls into view. | Workspace-wide results panel (streaming `project::start_project_search` into a chrome side panel); toolbar-style toggles instead of cryptic `[lit]` / `Aa` / `ab` flag tags. |
 | **M17** | Diff engine & renderer | **Partial** | `editor-diff`: `compute.rs` Myers diff + `intra_line.rs` + `session.rs` + `display.rs`. `editor-ui::gutter_marks` painted at the left gutter edge from a cached `hunks` list that refreshes version-gated. | Inline preview / side-by-side diff view mode; review sidebar for multi-file changes. |
 | **M18** | Git integration baseline | **Partial** | `editor-git::GitRepo::discover` + branch read via `gix`. Branch name in status bar, refreshed every 5s. Per-file modified line count rendered as `N ±` next to the branch (from the same gutter-marks cache that drives the left-edge stripes). | Watch `.git/HEAD` instead of polling; stage/commit/diff/push/pull UI. |
 | **M19** | AI provider abstraction | **Library only** | `editor-ai-provider` (~2k lines): Anthropic, OpenAI + compat, Ollama, custom, rate limit, SSE, keyring secrets, `probe` + `registry`. | Any UI/command wiring in `editor-app`. No chat entry point; provider toggled only via config file. |
@@ -57,6 +57,7 @@ What **runs today** when you launch `editor-app.exe`:
 - Text editing (rope, undo/redo, word nav, multi-line selection, clipboard).
 - File I/O with encoding detection and atomic save.
 - Syntax highlighting for Rust / TOML / JSON / Markdown (auto-detected by path).
+- In-file find / replace (`Ctrl+F` / `Ctrl+H`, `F3` / `Shift+F3`) with match highlights.
 - Status bar (cursor, encoding, line ending, git branch, external-modified marker).
 - Session persistence (last file, cursor, scroll, window geometry, sidebar state).
 - Multi-buffer tabs with MRU ordering; FS event flags external modifications.
@@ -68,8 +69,8 @@ What **runs today** when you launch `editor-app.exe`:
 
 What **does not** run today (but has scaffolding/libraries):
 
-- `Ctrl+F` find bar (M16 — matcher exists, UI not wired).
-- Diff view / gutter marks (M17 — engine exists).
+- Workspace-wide results panel (M16 — project matcher streams, no UI).
+- Dedicated diff view mode (M17 — gutter marks ship, no side-by-side).
 - Git commit / push / pull UI (M18 — only branch name).
 - Streaming LLM / chat / agents / tools (M19/M20/M23 — libraries only).
 - Metadata sidecar UI (M21 — library only).
