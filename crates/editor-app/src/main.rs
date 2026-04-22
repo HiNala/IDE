@@ -2240,6 +2240,11 @@ impl App {
                 frame_chrome: chrome_opt.as_ref(),
                 content_inset_left_px: inset_left_px,
                 content_inset_top_px: inset_top_px,
+                language: self
+                    .open_path
+                    .as_deref()
+                    .map(editor_render::editor_syntax::Language::from_path)
+                    .unwrap_or(editor_render::editor_syntax::Language::Plain),
             };
             match renderer.render_frame(&input) {
                 Ok(timings) => {

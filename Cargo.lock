@@ -1227,6 +1227,7 @@ dependencies = [
  "criterion",
  "editor-core",
  "editor-diff",
+ "editor-syntax",
  "editor-terminal",
  "editor-ui",
  "glyphon",
@@ -1282,6 +1283,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
 ]
+
+[[package]]
+name = "editor-syntax"
+version = "0.1.0-mvp"
 
 [[package]]
 name = "editor-terminal"

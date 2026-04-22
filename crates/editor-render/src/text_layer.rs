@@ -3,8 +3,9 @@
 use std::cmp::min;
 
 use editor_core::{ScrollOffset, TextBufferSnapshot};
+use editor_syntax::{Language, TokenKind};
 use editor_terminal::TerminalRenderSnapshot;
-use editor_ui::{FrameChrome, StatusBarLayout};
+use editor_ui::{palette, FrameChrome, StatusBarLayout};
 use glyphon::{
     Attrs, Buffer, Cache, Color, ColorMode, ContentType, CustomGlyph, Family, FontSystem, Metrics,
     PrepareError, RasterizeCustomGlyphRequest, RasterizedCustomGlyph, Resolution, Shaping,
@@ -27,6 +28,22 @@ fn rasterize_cursor(req: RasterizeCustomGlyphRequest) -> Option<RasterizedCustom
     }
     let n = req.width as usize * req.height as usize;
     Some(RasterizedCustomGlyph { data: vec![255u8; n], content_type: ContentType::Mask })
+}
+
+/// Map a [`TokenKind`] onto the theme's syntax color slots. Returns `None`
+/// when the token should inherit the default foreground color (keeps span
+/// attrs minimal and lets glyphon reuse shape cache entries).
+fn syntax_color(kind: TokenKind) -> Option<[u8; 3]> {
+    match kind {
+        TokenKind::Text => None,
+        TokenKind::Keyword => Some(palette::SYNTAX_KEYWORD),
+        TokenKind::Type => Some(palette::SYNTAX_TYPE),
+        TokenKind::String | TokenKind::Char => Some(palette::SYNTAX_STRING),
+        TokenKind::Comment => Some(palette::SYNTAX_COMMENT),
+        TokenKind::Number => Some(palette::SYNTAX_NUMBER),
+        TokenKind::Attribute | TokenKind::Lifetime => Some(palette::SYNTAX_ATTRIBUTE),
+        TokenKind::Macro => Some(palette::SYNTAX_FUNCTION),
+    }
 }
 
 /// Line number column width + monospace cell width (matches cursor column spacing).
@@ -292,9 +309,10 @@ impl TextLayer {
         line_h: f32,
         cursor_line: usize,
         cursor_col: usize,
+        language: Language,
     ) {
         let rope = snapshot.rope();
-        let attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY));
+        let default_attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY));
 
         self.line_buffers.clear();
         self.custom_glyphs_per_line.clear();
@@ -303,7 +321,53 @@ impl TextLayer {
             let mut buf = Buffer::new(&mut self.font_system, metrics);
             buf.set_size(&mut self.font_system, Some(physical_size.width as f32), None);
             let line_text = rope.line(line_idx).to_string();
-            buf.set_text(&mut self.font_system, &line_text, &attrs, Shaping::Advanced, None);
+
+            match language {
+                Language::Plain => {
+                    buf.set_text(
+                        &mut self.font_system,
+                        &line_text,
+                        &default_attrs,
+                        Shaping::Advanced,
+                        None,
+                    );
+                }
+                _ => {
+                    // Per-token rich-text: each colored span carries its own Attrs;
+                    // unstyled runs (`TokenKind::Text`) reuse the default so the
+                    // glyphon shape cache can hit on them across lines.
+                    let spans = language.tokenize_line(&line_text);
+                    if spans.is_empty() {
+                        buf.set_text(
+                            &mut self.font_system,
+                            &line_text,
+                            &default_attrs,
+                            Shaping::Advanced,
+                            None,
+                        );
+                    } else {
+                        let styled: Vec<(&str, Attrs<'_>)> = spans
+                            .iter()
+                            .map(|s| {
+                                let slice = &line_text[s.start..s.end];
+                                let attrs = if let Some([r, g, b]) = syntax_color(s.kind) {
+                                    default_attrs.clone().color(Color::rgb(r, g, b))
+                                } else {
+                                    default_attrs.clone()
+                                };
+                                (slice, attrs)
+                            })
+                            .collect();
+                        buf.set_rich_text(
+                            &mut self.font_system,
+                            styled,
+                            &default_attrs,
+                            Shaping::Advanced,
+                            None,
+                        );
+                    }
+                }
+            }
             buf.shape_until_scroll(&mut self.font_system, false);
 
             let mut customs = Vec::new();
@@ -461,6 +525,7 @@ impl TextLayer {
         frame_chrome: Option<&FrameChrome>,
         content_inset_left_px: f32,
         content_inset_top_px: f32,
+        language: Language,
     ) -> Result<(), RenderError> {
         if let Some(lines) = settings_overlay {
             return self.prepare_settings_overlay(device, queue, lines, physical_size);
@@ -502,6 +567,7 @@ impl TextLayer {
             line_h,
             cursor_line,
             cursor_col,
+            language,
         );
 
         let (gutter_w, _) = compute_gutter_width_px(total_lines, self.scale_factor);
@@ -612,6 +678,7 @@ impl TextLayer {
                     line_h,
                     cursor_line,
                     cursor_col,
+                    language,
                 );
                 self.status_line_buffer = None;
                 if let Some(sb) = status_bar {

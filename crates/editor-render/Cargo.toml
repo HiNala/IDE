@@ -20,6 +20,7 @@ workspace = true
 [dependencies]
 editor-core         = { path = "../editor-core" }
 editor-diff         = { path = "../editor-diff" }
+editor-syntax       = { path = "../editor-syntax" }
 editor-ui           = { path = "../editor-ui" }
 editor-terminal     = { path = "../editor-terminal" }
 ropey               = { workspace = true }

@@ -9,7 +9,7 @@
 #![allow(clippy::print_stderr)] // Skip message when no GPU in optional smoke test.
 
 use editor_core::{ScrollOffset, TextBuffer};
-use editor_render::TextLayer;
+use editor_render::{editor_syntax, TextLayer};
 use wgpu::{DeviceDescriptor, Instance, InstanceDescriptor, TextureFormat};
 use winit::dpi::PhysicalSize;
 
@@ -68,6 +68,7 @@ fn text_layer_prepare_smoke_large_buffer() {
             None,
             0.0,
             0.0,
+            editor_syntax::Language::Plain,
         )
         .expect("prepare should succeed");
 }

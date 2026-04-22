@@ -11,7 +11,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, Throughput};
 use editor_core::{ScrollOffset, TextBuffer};
-use editor_render::TextLayer;
+use editor_render::{editor_syntax, TextLayer};
 use wgpu::{DeviceDescriptor, Instance, InstanceDescriptor, TextureFormat};
 use winit::dpi::PhysicalSize;
 
@@ -82,6 +82,7 @@ fn bench_prepare_warm(ctx: &mut BenchCtx) {
             None,
             0.0,
             0.0,
+            editor_syntax::Language::Plain,
         )
         .expect("prepare warmup");
 }
@@ -118,6 +119,7 @@ fn run() {
                     None,
                     0.0,
                     0.0,
+                    editor_syntax::Language::Plain,
                 )
                 .expect("prepare");
         });
@@ -147,6 +149,7 @@ fn run() {
                     None,
                     0.0,
                     0.0,
+                    editor_syntax::Language::Plain,
                 )
                 .expect("prepare");
         });

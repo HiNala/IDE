@@ -19,6 +19,7 @@ members = [
     "crates/editor-search",
     "crates/editor-settings",
     "crates/editor-skills",
+    "crates/editor-syntax",
     "crates/editor-terminal",
     "crates/editor-ui",
     "crates/editor-workspace",

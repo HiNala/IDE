@@ -17,6 +17,7 @@ mod text_layer;
 mod timing;
 
 pub use editor_renderer::{EditorRenderer, FrameInput, FrameTimings};
+pub use editor_syntax;
 pub use error::RenderError;
 pub use gpu::{dry_run_headless, GpuContext};
 pub use text_layer::compute_gutter_width_px;
