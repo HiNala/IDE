@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod activity_bar;
 pub mod chrome;
 pub mod find_bar;
 pub mod keybindings;
@@ -17,6 +18,7 @@ pub mod sidebar;
 pub mod status_bar;
 pub mod tab_strip;
 
+pub use activity_bar::{paint_activity_bar, ActivityIcon, ACTIVITY_BAR_WIDTH};
 pub use chrome::{ChromeQuad, ChromeTextLine, FrameChrome};
 pub use find_bar::FindBar;
 pub use quick_open::QuickOpenRanker;

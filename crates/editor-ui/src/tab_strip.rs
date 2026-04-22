@@ -5,13 +5,19 @@ use editor_workspace::{BufferId, BufferManager};
 use crate::chrome::{ChromeQuad, FrameChrome};
 
 /// Logical height of the tab strip.
-pub const TAB_STRIP_HEIGHT: f32 = 32.0;
+pub const TAB_STRIP_HEIGHT: f32 = 34.0;
 const TAB_MIN_W: f32 = 120.0;
 const TAB_MAX_W: f32 = 240.0;
-const TAB_PAD: f32 = 8.0;
-const INACTIVE_TAB: [f32; 4] = [0.12, 0.12, 0.14, 1.0];
-const ACTIVE_TAB: [f32; 4] = [0.16, 0.17, 0.22, 1.0];
-const ACTIVE_TOP_BAR: [f32; 4] = [0.35, 0.55, 0.95, 1.0];
+const TAB_PAD: f32 = 10.0;
+// VS Code Dark+ palette.
+const STRIP_BG: [f32; 4] = [0.176, 0.176, 0.176, 1.0]; // #2d2d2d
+const INACTIVE_TAB: [f32; 4] = [0.176, 0.176, 0.176, 1.0]; // #2d2d2d (same as strip)
+const ACTIVE_TAB: [f32; 4] = [0.118, 0.118, 0.118, 1.0]; // #1e1e1e (matches editor)
+const ACTIVE_TOP_BAR: [f32; 4] = [0.0, 0.48, 0.80, 1.0]; // #007acc
+const TAB_SEPARATOR: [f32; 4] = [0.098, 0.098, 0.098, 1.0]; // #191919
+const ACTIVE_TEXT: [u8; 3] = [0xff, 0xff, 0xff];
+const INACTIVE_TEXT: [u8; 3] = [0x96, 0x96, 0x96];
+const CLOSE_DIM: [u8; 3] = [0x7a, 0x7a, 0x7a];
 
 /// Hit regions for a frame (for mouse routing).
 #[derive(Debug, Clone)]
@@ -52,7 +58,8 @@ pub fn tab_label(id: BufferId, buffers: &BufferManager, order: &[BufferId]) -> S
     }
 }
 
-/// Paint tabs (oldest left) and return hit regions.
+/// Paint the strip background plus the tabs (oldest left) and return hit regions.
+/// `strip_width_px` should cover the full area from `origin_x` to the window's right edge.
 pub fn paint_tab_strip(
     chrome: &mut FrameChrome,
     buffers: &BufferManager,
@@ -60,16 +67,35 @@ pub fn paint_tab_strip(
     origin_x: f32,
     origin_y: f32,
     scroll_x: f32,
+    strip_width_px: f32,
 ) -> Vec<TabHit> {
     let mut hits = Vec::new();
+    let h = TAB_STRIP_HEIGHT * scale;
+
+    // Always paint the strip background so the empty right side doesn't leak editor bg.
+    chrome.push_quad(ChromeQuad {
+        left: origin_x,
+        top: origin_y,
+        width: strip_width_px,
+        height: h,
+        rgba: STRIP_BG,
+    });
+    // 1px bottom separator under the strip.
+    chrome.push_quad(ChromeQuad {
+        left: origin_x,
+        top: origin_y + h - scale.max(1.0),
+        width: strip_width_px,
+        height: scale.max(1.0),
+        rgba: TAB_SEPARATOR,
+    });
+
     let order = buffers.order_oldest_first();
     if order.is_empty() {
         return hits;
     }
-    let h = TAB_STRIP_HEIGHT * scale;
     let mut x = origin_x - scroll_x;
     let active = buffers.active();
-    let close_w = 20.0 * scale;
+    let close_w = 24.0 * scale;
 
     for id in &order {
         let label = tab_label(*id, buffers, &order);
@@ -77,7 +103,7 @@ pub fn paint_tab_strip(
         if buffers.get(*id).map(|s| s.dirty).unwrap_or(false) {
             display = format!("● {display}");
         }
-        let w = (display.chars().count() as f32 * 7.2 * scale + TAB_PAD * 2.0 * scale)
+        let w = (display.chars().count() as f32 * 7.2 * scale + TAB_PAD * 2.0 * scale + close_w)
             .clamp(TAB_MIN_W * scale, TAB_MAX_W * scale);
         let is_active = active == Some(*id);
         let tab_bg = if is_active { ACTIVE_TAB } else { INACTIVE_TAB };
@@ -87,15 +113,25 @@ pub fn paint_tab_strip(
                 left: x,
                 top: origin_y,
                 width: w,
-                height: 3.0 * scale,
+                height: 2.0 * scale,
                 rgba: ACTIVE_TOP_BAR,
             });
+        } else {
+            // Subtle 1px separator on the right edge to delimit inactive tabs.
+            chrome.push_quad(ChromeQuad {
+                left: x + w - scale.max(1.0),
+                top: origin_y + 4.0 * scale,
+                width: scale.max(1.0),
+                height: h - 8.0 * scale,
+                rgba: TAB_SEPARATOR,
+            });
         }
-        chrome.push_line(x + 8.0 * scale, origin_y + 8.0 * scale, display, [0xe4, 0xe4, 0xe8]);
+        let text_rgb = if is_active { ACTIVE_TEXT } else { INACTIVE_TEXT };
+        chrome.push_line(x + TAB_PAD * scale, origin_y + 10.0 * scale, display, text_rgb);
         let cx0 = x + w - close_w;
-        chrome.push_line(cx0 + 5.0 * scale, origin_y + 6.0 * scale, "×", [0xa8, 0xa8, 0xb0]);
+        chrome.push_line(cx0 + 8.0 * scale, origin_y + 9.0 * scale, "×", CLOSE_DIM);
         hits.push(TabHit { id: *id, x0: x, x1: x + w - close_w, close_x0: cx0, close_x1: x + w });
-        x += w + 2.0 * scale;
+        x += w;
     }
     hits
 }

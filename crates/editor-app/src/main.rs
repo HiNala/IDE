@@ -29,7 +29,8 @@ use editor_io::{load_file_sync, save_file_sync, Encoding, LoadError, LoadedFile,
 use editor_settings::{LegacySessionMerge, LineEndingPreference, SettingsStore};
 use editor_terminal::{detect_shell, Terminal, TerminalConfig, TerminalId};
 use editor_ui::{
-    paint_tab_strip, FindBar, FrameChrome, QuickOpenPalette, Sidebar, TabHit, TAB_STRIP_HEIGHT,
+    paint_activity_bar, paint_tab_strip, ActivityIcon, ChromeQuad, FindBar, FrameChrome,
+    QuickOpenPalette, Sidebar, TabHit, ACTIVITY_BAR_WIDTH, TAB_STRIP_HEIGHT,
 };
 use editor_workspace::entry::FileEntry;
 use editor_workspace::{BufferId, BufferManager, FileSystemEvent, Workspace};
@@ -1129,12 +1130,8 @@ impl App {
         // If a match exists, pick the one closest to the caret.
         if !self.find_bar.matches.is_empty() {
             let caret = self.cursor.pos().0;
-            let idx = self
-                .find_bar
-                .matches
-                .iter()
-                .position(|m| m.byte_range.start >= caret)
-                .unwrap_or(0);
+            let idx =
+                self.find_bar.matches.iter().position(|m| m.byte_range.start >= caret).unwrap_or(0);
             self.find_bar.current_match = Some(idx.min(self.find_bar.matches.len() - 1));
         }
         self.reveal_current_match();
@@ -1383,13 +1380,18 @@ impl App {
         }
     }
 
-    /// Sidebar width in physical px when visible, else 0.
-    fn sidebar_width_px(&self) -> f32 {
-        if self.sidebar.visible {
-            self.sidebar.width * self.scale_factor
-        } else {
-            0.0
-        }
+    /// Left chrome width in physical px: activity bar + sidebar (if visible).
+    /// Used by mouse routing and hit-testing so clicks on chrome don't fall through to the editor.
+    fn left_chrome_width_px(&self) -> f32 {
+        let activity = ACTIVITY_BAR_WIDTH * self.scale_factor;
+        let sidebar =
+            if self.sidebar.visible { self.sidebar.width * self.scale_factor } else { 0.0 };
+        activity + sidebar
+    }
+
+    /// Just the activity bar width (always painted) in physical px.
+    fn activity_bar_width_px(&self) -> f32 {
+        ACTIVITY_BAR_WIDTH * self.scale_factor
     }
 
     /// Tab strip height in physical px when any buffer is tracked, else 0.
@@ -1409,7 +1411,7 @@ impl App {
         let line_h = renderer.line_height_px();
         let status_h = self.status_bar_height_px();
         let term_h = self.terminal_pane_height_px();
-        let sidebar_w = self.sidebar_width_px();
+        let chrome_left_w = self.left_chrome_width_px();
         let tab_h = self.tabstrip_height_px();
         let (gutter_w, char_w) =
             editor_render::compute_gutter_width_px(self.buffer.len_lines(), self.scale_factor);
@@ -1417,7 +1419,7 @@ impl App {
         if y_px < tab_h as f64 || y_px >= content_bottom as f64 {
             return None;
         }
-        if x_px < sidebar_w as f64 {
+        if x_px < chrome_left_w as f64 {
             return None;
         }
         let total_lines = self.buffer.len_lines();
@@ -1434,7 +1436,7 @@ impl App {
         if line_idx >= total_lines {
             line_idx = total_lines.saturating_sub(1);
         }
-        let body_left = sidebar_w + 8.0 + gutter_w;
+        let body_left = chrome_left_w + 8.0 + gutter_w;
         let dx = x_px as f32 - body_left;
         let line_start = self.buffer.line_to_byte(line_idx).ok()?;
         let line_len = self.buffer.line_len_bytes(line_idx).ok()?;
@@ -1461,10 +1463,25 @@ impl App {
             return;
         }
 
-        // Sidebar clicks (leftmost column).
-        let sidebar_w = self.sidebar_width_px() as f64;
-        if self.sidebar.visible && x < sidebar_w {
-            if let Some(idx) = self.sidebar.row_index_at_y(y as f32, self.scale_factor, 0.0) {
+        // Activity bar clicks (the leftmost slim column). Today: the first icon toggles
+        // the sidebar; others are placeholders.
+        let activity_w = self.activity_bar_width_px() as f64;
+        if x < activity_w {
+            let slot_h = (editor_ui::activity_bar::ACTIVITY_ICON_HEIGHT * self.scale_factor) as f64;
+            let slot = (y / slot_h.max(1.0)).floor() as i32;
+            if slot == 0 {
+                let _ = self.apply_editor_command(EditorCommand::ToggleSidebar);
+            }
+            self.request_redraw();
+            return;
+        }
+
+        // Sidebar clicks (right of the activity bar, when visible).
+        let chrome_left_w = self.left_chrome_width_px() as f64;
+        if self.sidebar.visible && x < chrome_left_w {
+            // Subtract the header so the row index calculation is relative to the rows area.
+            let rows_top = editor_ui::sidebar::HEADER_HEIGHT * self.scale_factor;
+            if let Some(idx) = self.sidebar.row_index_at_y(y as f32, self.scale_factor, rows_top) {
                 let row = self.sidebar.flat_rows()[idx].clone();
                 if row.is_dir {
                     self.sidebar.toggle_dir(&row.rel);
@@ -1859,19 +1876,28 @@ impl App {
         let tabstrip_on = !self.buffers.is_empty();
         let find_on = self.find_bar.visible;
 
-        if !sidebar_on && !tabstrip_on && !self.quick_open.visible && !find_on {
-            return (None, 0.0, 0.0, Vec::new());
-        }
-
         let mut chrome = FrameChrome::new();
-        let inset_left_px = if sidebar_on { self.sidebar.width * scale } else { 0.0 };
+        let activity_w = ACTIVITY_BAR_WIDTH * scale;
+        let sidebar_w = if sidebar_on { self.sidebar.width * scale } else { 0.0 };
+        let inset_left_px = activity_w + sidebar_w;
         let inset_top_px = if tabstrip_on { TAB_STRIP_HEIGHT * scale } else { 0.0 };
 
-        // Sidebar: leftmost column spanning from top to bottom (minus status bar + terminal).
+        let status_h = self.status_bar_height_px();
+        let term_h = self.terminal_pane_height_px();
+        let column_h = (physical.height as f32 - status_h - term_h).max(1.0);
+
+        // Activity bar: always visible minimal shell.
+        let icons = [
+            ActivityIcon::new("\u{1F5CE}", sidebar_on), // 🗎 files / explorer
+            ActivityIcon::new("\u{1F50D}", false),      // 🔍 search
+            ActivityIcon::new("\u{f1d3}", false),       // source control (private-use; shows as □)
+            ActivityIcon::new("\u{25B6}", false),       // ▶ run
+            ActivityIcon::new("\u{2699}", false),       // ⚙ settings (bottom spacer is manual)
+        ];
+        paint_activity_bar(&mut chrome, scale, column_h, &icons);
+
+        // Sidebar column: right of the activity bar.
         if sidebar_on {
-            let status = self.status_bar_height_px();
-            let term = self.terminal_pane_height_px();
-            let viewport_h = (physical.height as f32 - status - term).max(1.0);
             let auto =
                 if let (Some(abs), Some(root)) = (self.open_path.as_ref(), self.workspace_root()) {
                     abs.strip_prefix(root).ok().map(Path::to_path_buf)
@@ -1884,15 +1910,25 @@ impl App {
                 self.workspace_root(),
                 auto.as_deref(),
                 scale,
+                activity_w,
                 0.0,
-                viewport_h,
+                column_h,
             );
         }
 
-        // Tab strip: sits just under any window chrome, offset right of the sidebar.
+        // Tab strip: spans right of the sidebar.
         let mut tab_hits = Vec::new();
         if tabstrip_on {
-            tab_hits = paint_tab_strip(&mut chrome, &self.buffers, scale, inset_left_px, 0.0, 0.0);
+            let strip_w = (physical.width as f32 - inset_left_px).max(0.0);
+            tab_hits = paint_tab_strip(
+                &mut chrome,
+                &self.buffers,
+                scale,
+                inset_left_px,
+                0.0,
+                0.0,
+                strip_w,
+            );
         }
 
         // Find bar: backdrop + highlight quads for visible matches + overlay text.
@@ -1909,6 +1945,20 @@ impl App {
                 physical.height as f32,
             );
         }
+
+        // Status bar accent — blue when a workspace is open (VS Code convention), else neutral.
+        let status_rgba: [f32; 4] = if self.workspace.is_some() {
+            [0.0, 0.48, 0.80, 1.0] // #007acc
+        } else {
+            [0.20, 0.20, 0.21, 1.0] // #333333
+        };
+        chrome.push_quad(ChromeQuad {
+            left: 0.0,
+            top: physical.height as f32 - status_h,
+            width: physical.width as f32,
+            height: status_h,
+            rgba: status_rgba,
+        });
 
         (Some(chrome), inset_left_px, inset_top_px, tab_hits)
     }
@@ -1946,11 +1996,8 @@ impl App {
             let Ok(end_lc) = self.buffer.byte_to_line_col(BytePos(end)) else {
                 continue;
             };
-            let rgba = if Some(i) == current {
-                [1.0, 0.75, 0.1, 0.55]
-            } else {
-                [1.0, 0.9, 0.3, 0.32]
-            };
+            let rgba =
+                if Some(i) == current { [1.0, 0.75, 0.1, 0.55] } else { [1.0, 0.9, 0.3, 0.32] };
             // One rect per line the match spans.
             for line in start_lc.line..=end_lc.line {
                 let line_top = body_top + 4.0 + (line as f32) * line_h - scroll_y;
@@ -1969,7 +2016,7 @@ impl App {
                 if width <= 0.0 {
                     continue;
                 }
-                chrome.push_quad(editor_ui::ChromeQuad {
+                chrome.push_quad(ChromeQuad {
                     left,
                     top: line_top.max(body_top),
                     width,
@@ -1982,7 +2029,7 @@ impl App {
         // 2) Find bar backdrop — dark strip just below the tab strip, spanning the editor body.
         let backdrop_top = body_top;
         let backdrop_height = self.find_bar.backdrop_height_px(scale);
-        chrome.push_quad(editor_ui::ChromeQuad {
+        chrome.push_quad(ChromeQuad {
             left: inset_left_px,
             top: backdrop_top,
             width: (physical.width as f32 - inset_left_px).max(0.0),
@@ -2320,9 +2367,12 @@ impl App {
             EditorCommand::ToggleSidebar => {
                 self.sidebar.visible = !self.sidebar.visible;
                 if self.sidebar.visible && self.workspace.is_none() {
-                    // Best-effort: no workspace yet — offer to pick one.
+                    // First-time open with no workspace — prompt for one so the tree isn't empty.
                     if let Some(root) = rfd::FileDialog::new().pick_folder() {
                         self.open_workspace_folder(&root);
+                    } else {
+                        // User cancelled — roll the toggle back so we don't leave an empty pane.
+                        self.sidebar.visible = false;
                     }
                 }
                 self.sidebar.focused = self.sidebar.visible;
