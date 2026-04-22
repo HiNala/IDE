@@ -64,6 +64,7 @@ lcov.info
 /M12_RESTORE_NOTES.txt
 /restore_*.ps1
 /check_out.txt
+/.commit_msg.txt
 
 # Local vector index (derived; `editor-app index --rebuild` regenerates)
 .ide/index.sqlite

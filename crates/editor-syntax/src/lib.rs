@@ -10,6 +10,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod json;
+pub mod markdown;
 pub mod rust;
 pub mod toml;
 
@@ -69,6 +71,19 @@ impl TokenSpan {
     }
 }
 
+/// Per-line lexer state carried between adjacent lines.
+///
+/// Languages that need multi-line context (Rust's nested `/* ... */`) read and
+/// write this. Languages without multi-line constructs leave it untouched —
+/// callers can still feed the same `LineState` through every line and pay no
+/// extra cost.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LineState {
+    /// Depth of `/* ... */` nesting open at the start of the line. 0 means
+    /// "not inside a block comment". Only used by [`Language::Rust`].
+    pub block_comment_depth: u32,
+}
+
 /// Supported source languages. `Plain` yields a single `Text` span and is
 /// the default fallback for unknown / binary files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,6 +91,8 @@ pub enum Language {
     Plain,
     Rust,
     Toml,
+    Json,
+    Markdown,
 }
 
 impl Language {
@@ -87,6 +104,8 @@ impl Language {
         match ext.to_ascii_lowercase().as_str() {
             "rs" => Self::Rust,
             "toml" => Self::Toml,
+            "json" | "jsonc" | "json5" => Self::Json,
+            "md" | "markdown" | "mdown" | "mkd" => Self::Markdown,
             _ => Self::Plain,
         }
     }
@@ -116,18 +135,36 @@ impl Language {
     /// byte in the input. Callers can trust `spans[i].end == spans[i+1].start`.
     ///
     /// Plain text returns a single `Text` span for the whole line.
+    ///
+    /// Stateless; for coherent multi-line block comments use
+    /// [`Self::tokenize_line_with_state`].
     #[must_use]
     pub fn tokenize_line(self, line: &str) -> Vec<TokenSpan> {
+        self.tokenize_line_with_state(line, LineState::default()).0
+    }
+
+    /// Tokenize `line` using the state carried from the previous line. Returns
+    /// the spans plus the state leaving this line — feed that state into the
+    /// next call to keep multi-line constructs coherent.
+    #[must_use]
+    pub fn tokenize_line_with_state(
+        self,
+        line: &str,
+        state: LineState,
+    ) -> (Vec<TokenSpan>, LineState) {
         match self {
             Self::Plain => {
                 if line.is_empty() {
-                    Vec::new()
+                    (Vec::new(), state)
                 } else {
-                    vec![TokenSpan::new(0, line.len(), TokenKind::Text)]
+                    (vec![TokenSpan::new(0, line.len(), TokenKind::Text)], state)
                 }
             }
-            Self::Rust => rust::tokenize_line(line),
-            Self::Toml => toml::tokenize_line(line),
+            Self::Rust => rust::tokenize_line_with_state(line, state),
+            // Languages with no multi-line state pass it through unchanged.
+            Self::Toml => (toml::tokenize_line(line), state),
+            Self::Json => (json::tokenize_line(line), state),
+            Self::Markdown => (markdown::tokenize_line(line), state),
         }
     }
 }
@@ -144,6 +181,10 @@ mod tests {
         assert_eq!(Language::from_extension("rs"), Language::Rust);
         assert_eq!(Language::from_extension("RS"), Language::Rust);
         assert_eq!(Language::from_extension("toml"), Language::Toml);
+        assert_eq!(Language::from_extension("json"), Language::Json);
+        assert_eq!(Language::from_extension("JSONC"), Language::Json);
+        assert_eq!(Language::from_extension("md"), Language::Markdown);
+        assert_eq!(Language::from_extension("MARKDOWN"), Language::Markdown);
         assert_eq!(Language::from_extension("txt"), Language::Plain);
         assert_eq!(Language::from_extension(""), Language::Plain);
     }
@@ -154,7 +195,7 @@ mod tests {
         assert_eq!(Language::from_path(Path::new("src/main.rs")), Language::Rust);
         assert_eq!(Language::from_path(Path::new("Cargo.toml")), Language::Toml);
         assert_eq!(Language::from_path(Path::new("Cargo.lock")), Language::Toml);
-        assert_eq!(Language::from_path(Path::new("README.md")), Language::Plain);
+        assert_eq!(Language::from_path(Path::new("README.md")), Language::Markdown);
         assert_eq!(Language::from_path(Path::new("LICENSE")), Language::Plain);
     }
 

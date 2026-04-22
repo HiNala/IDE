@@ -1,13 +1,10 @@
 //! Hand-written single-line tokenizer for Rust source.
 //!
 //! Operates on one line at a time so a single edit only reshapes that line's
-//! glyph runs. The tradeoff is that multi-line block comments (`/* ... */`
-//! spanning two lines) are *not* coherently highlighted across lines — the
-//! opening `/*` on line N colors only to end-of-line N, and everything on
-//! line N+1 reverts to default. That's acceptable for M15; a tree-sitter
-//! backend in a later mission fixes it.
+//! glyph runs. A tiny [`LineState`] carrier threads block-comment nesting
+//! across lines so `/* ... */` spanning multiple lines highlights coherently.
 
-use crate::{TokenKind, TokenSpan};
+use crate::{LineState, TokenKind, TokenSpan};
 
 /// Reserved Rust keywords we color as `TokenKind::Keyword`.
 /// Sorted for readability; lookups use a `.contains()` over the slice which
@@ -27,6 +24,9 @@ const PRIMITIVES: &[&str] = &[
 
 /// Tokenize a single line of Rust source into non-overlapping spans.
 ///
+/// Convenience wrapper that discards the outgoing [`LineState`]. For coherent
+/// multi-line block comments, use [`tokenize_line_with_state`].
+///
 /// Guarantees:
 /// - Spans are sorted by `start`.
 /// - Every input byte is covered by exactly one span (including whitespace
@@ -34,12 +34,31 @@ const PRIMITIVES: &[&str] = &[
 /// - `spans[i].end == spans[i+1].start`.
 #[must_use]
 pub fn tokenize_line(line: &str) -> Vec<TokenSpan> {
+    tokenize_line_with_state(line, LineState::default()).0
+}
+
+/// Tokenize one line using `state` entering the line (typically the state
+/// returned by the previous line's call). The second tuple element is the
+/// state leaving the line — pass it to the next call to carry open block
+/// comments across lines.
+#[must_use]
+pub fn tokenize_line_with_state(line: &str, mut state: LineState) -> (Vec<TokenSpan>, LineState) {
     if line.is_empty() {
-        return Vec::new();
+        return (Vec::new(), state);
     }
     let bytes = line.as_bytes();
     let mut spans: Vec<TokenSpan> = Vec::with_capacity(16);
     let mut i = 0usize;
+
+    // Carry an open `/* */` from the previous line: consume bytes until the
+    // nesting balances (possibly opening new comments inside), or to EOL.
+    if state.block_comment_depth > 0 {
+        let (end, depth_after) =
+            advance_block_comment(bytes, 0, state.block_comment_depth as usize);
+        push(&mut spans, 0, end, TokenKind::Comment);
+        state.block_comment_depth = depth_after as u32;
+        i = end;
+    }
 
     // Helper to push a span, merging into the previous one when both carry
     // `TokenKind::Text` so the output never fragments into one-byte filler
@@ -65,29 +84,17 @@ pub fn tokenize_line(line: &str) -> Vec<TokenSpan> {
         // Line comment: `//` through end of line. Everything after is Comment.
         if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             push(&mut spans, i, bytes.len(), TokenKind::Comment);
-            return spans;
+            return (spans, state);
         }
 
         // Start of block comment `/*` — we color from here to the closing `*/`
-        // if it appears on THIS line, otherwise to EOL. Nested comments handled
-        // with a counter to match rustc's lexing rule.
+        // on this line, or to EOL if the comment spans. Nested comments match
+        // rustc's lexing rule. Depth remaining > 0 at EOL is carried in state.
         if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
             let start = i;
-            let mut depth = 1usize;
-            let mut j = i + 2;
-            while j + 1 < bytes.len() && depth > 0 {
-                if bytes[j] == b'/' && bytes[j + 1] == b'*' {
-                    depth += 1;
-                    j += 2;
-                } else if bytes[j] == b'*' && bytes[j + 1] == b'/' {
-                    depth -= 1;
-                    j += 2;
-                } else {
-                    j += 1;
-                }
-            }
-            let end = if depth == 0 { j } else { bytes.len() };
+            let (end, depth_after) = advance_block_comment(bytes, i + 2, 1);
             push(&mut spans, start, end, TokenKind::Comment);
+            state.block_comment_depth = depth_after as u32;
             i = end;
             continue;
         }
@@ -221,7 +228,31 @@ pub fn tokenize_line(line: &str) -> Vec<TokenSpan> {
         i += 1;
     }
 
-    spans
+    (spans, state)
+}
+
+/// Scan bytes for block-comment nesting, starting at `from` with `depth`
+/// already open. Returns `(end_index, remaining_depth)` where `end_index`
+/// is the byte just past the closing `*/` (or `bytes.len()` if the comment
+/// ran off the end of the line).
+fn advance_block_comment(bytes: &[u8], from: usize, mut depth: usize) -> (usize, usize) {
+    let mut j = from;
+    while depth > 0 && j + 1 < bytes.len() {
+        if bytes[j] == b'/' && bytes[j + 1] == b'*' {
+            depth += 1;
+            j += 2;
+        } else if bytes[j] == b'*' && bytes[j + 1] == b'/' {
+            depth -= 1;
+            j += 2;
+        } else {
+            j += 1;
+        }
+    }
+    if depth > 0 {
+        (bytes.len(), depth)
+    } else {
+        (j, 0)
+    }
 }
 
 /// Decide whether an ASCII-ident word is a keyword, primitive, type
@@ -461,6 +492,48 @@ mod tests {
         let last = s.last().unwrap();
         assert_eq!(last.1, T::Comment);
         assert!(last.0.starts_with("/*"));
+    }
+
+    #[test]
+    fn block_comment_multi_line_state_tracks_depth() {
+        let (_s1, state1) = tokenize_line_with_state("let x = /* start", LineState::default());
+        assert_eq!(state1.block_comment_depth, 1);
+
+        // Line 2: entirely inside comment, still open.
+        let line2 = "still inside comment";
+        let (s2, state2) = tokenize_line_with_state(line2, state1);
+        assert_eq!(s2.len(), 1);
+        assert_eq!(s2[0].kind, T::Comment);
+        assert_eq!(s2[0].start, 0);
+        assert_eq!(s2[0].end, line2.len());
+        assert_eq!(state2.block_comment_depth, 1);
+
+        // Line 3: closes the comment — depth back to 0, remaining code lexes.
+        let line3 = "closing */ let y = 2;";
+        let (s3, state3) = tokenize_line_with_state(line3, state2);
+        assert_eq!(state3.block_comment_depth, 0);
+        assert!(s3.iter().any(|span| span.kind == T::Comment));
+        assert!(s3.iter().any(|span| span.kind == T::Keyword));
+    }
+
+    #[test]
+    fn block_comment_nested_depth_increments() {
+        let (_s, state) = tokenize_line_with_state("a /* outer /* inner", LineState::default());
+        assert_eq!(state.block_comment_depth, 2);
+
+        let (_s2, state2) = tokenize_line_with_state("*/ still open", state);
+        assert_eq!(state2.block_comment_depth, 1);
+
+        let (_s3, state3) = tokenize_line_with_state("*/ closed", state2);
+        assert_eq!(state3.block_comment_depth, 0);
+    }
+
+    #[test]
+    fn stateful_api_matches_stateless_on_plain_lines() {
+        let line = "let x: u32 = 42;";
+        let stateless = tokenize_line(line);
+        let (stateful, _) = tokenize_line_with_state(line, LineState::default());
+        assert_eq!(stateless, stateful);
     }
 
     #[test]

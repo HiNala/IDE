@@ -3,7 +3,7 @@
 use std::cmp::min;
 
 use editor_core::{ScrollOffset, TextBufferSnapshot};
-use editor_syntax::{Language, TokenKind};
+use editor_syntax::{Language, LineState, TokenKind};
 use editor_terminal::TerminalRenderSnapshot;
 use editor_ui::{palette, FrameChrome, StatusBarLayout};
 use glyphon::{
@@ -317,6 +317,22 @@ impl TextLayer {
         self.line_buffers.clear();
         self.custom_glyphs_per_line.clear();
 
+        // Compute the state ENTERING the first visible line by pre-scanning up
+        // to STATE_PRELUDE_LINES above the viewport. Bounded so huge files
+        // don't pay O(total_lines) per frame; if a block comment started
+        // further back than this window, it simply won't carry. In practice
+        // 2048 lines covers every reasonable file comment-spanning distance.
+        const STATE_PRELUDE_LINES: usize = 2048;
+        let mut state = LineState::default();
+        if language == Language::Rust && first > 0 {
+            let prelude_start = first.saturating_sub(STATE_PRELUDE_LINES);
+            for line_idx in prelude_start..first {
+                let line_text = rope.line(line_idx).to_string();
+                let (_spans, next) = language.tokenize_line_with_state(&line_text, state);
+                state = next;
+            }
+        }
+
         for line_idx in first..last {
             let mut buf = Buffer::new(&mut self.font_system, metrics);
             buf.set_size(&mut self.font_system, Some(physical_size.width as f32), None);
@@ -336,7 +352,8 @@ impl TextLayer {
                     // Per-token rich-text: each colored span carries its own Attrs;
                     // unstyled runs (`TokenKind::Text`) reuse the default so the
                     // glyphon shape cache can hit on them across lines.
-                    let spans = language.tokenize_line(&line_text);
+                    let (spans, next_state) = language.tokenize_line_with_state(&line_text, state);
+                    state = next_state;
                     if spans.is_empty() {
                         buf.set_text(
                             &mut self.font_system,
