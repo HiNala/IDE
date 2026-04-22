@@ -953,7 +953,11 @@ impl App {
     }
 
     fn refresh_git_branch(&mut self, force: bool) {
-        let due = force || self.git_last_refresh.elapsed() >= Duration::from_secs(5);
+        // Notify-driven: `.git/HEAD` and `.git/refs/heads/*` modifications call this with
+        // `force=true` via `apply_workspace_event`. The 60s fallback catches rare cases
+        // the FS watcher misses (packed-refs rewrites under certain git versions, WSL edge
+        // cases, etc.) without hammering `gix::discover` every frame.
+        let due = force || self.git_last_refresh.elapsed() >= Duration::from_secs(60);
         if !due {
             return;
         }
@@ -995,6 +999,16 @@ impl App {
                 self.rebuild_workspace_entries();
             }
             FileSystemEvent::Modified(path) => {
+                // Git internals: any change under `.git/` (HEAD, refs/heads/*, packed-refs,
+                // index on commit) should refresh the branch display immediately. We don't
+                // flag these as "externally modified" because they aren't open as buffers.
+                if path_inside_dot_git(&path) {
+                    if is_git_ref_like(&path) {
+                        self.refresh_git_branch(true);
+                    }
+                    return;
+                }
+
                 // Flag any matching buffer (including the active mirror) as externally modified.
                 let matches_active =
                     self.open_path.as_ref().is_some_and(|cur| BufferManager::same_path(cur, &path));
@@ -3321,6 +3335,36 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
+/// True when any path component of `p` is literally `.git`.
+///
+/// Used to peel git-internal filesystem events (HEAD, refs/, index, packed-refs, …)
+/// off the regular buffer "externally modified" path — those belong to the git state
+/// refresh instead.
+fn path_inside_dot_git(p: &Path) -> bool {
+    p.components().any(|c| c.as_os_str() == ".git")
+}
+
+/// Narrow the broad `.git/` filter to paths that actually influence what
+/// `GitRepo::branch_name()` returns: `HEAD`, anything under `refs/` (heads, tags,
+/// remotes) and the `packed-refs` rewrite. Skips noisy per-commit churn like
+/// `.git/index.lock` or `.git/objects/*`.
+fn is_git_ref_like(p: &Path) -> bool {
+    let mut after_dot_git = false;
+    for comp in p.components() {
+        let s = comp.as_os_str();
+        if after_dot_git {
+            if s == "HEAD" || s == "packed-refs" || s == "refs" {
+                return true;
+            }
+            return false;
+        }
+        if s == ".git" {
+            after_dot_git = true;
+        }
+    }
+    false
+}
+
 fn init_tracing(json_logs: bool) {
     let default_filter = if cfg!(debug_assertions) {
         "info,editor_app=info,editor_render=info,wgpu=warn"
@@ -3385,4 +3429,30 @@ fn init_tracing(json_logs: bool) {
     }
 
     info!("editor-app v{VERSION} starting");
+}
+
+#[cfg(test)]
+mod git_watch_tests {
+    use super::*;
+
+    #[test]
+    fn dot_git_detection_matches_internals() {
+        assert!(path_inside_dot_git(Path::new("/ws/.git/HEAD")));
+        assert!(path_inside_dot_git(Path::new("/ws/.git/refs/heads/main")));
+        assert!(path_inside_dot_git(Path::new(".git/index")));
+        assert!(!path_inside_dot_git(Path::new("/ws/src/main.rs")));
+        assert!(!path_inside_dot_git(Path::new("/ws/.gitignore")));
+    }
+
+    #[test]
+    fn ref_like_gates_head_refs_and_packed_refs() {
+        assert!(is_git_ref_like(Path::new("/ws/.git/HEAD")));
+        assert!(is_git_ref_like(Path::new("/ws/.git/packed-refs")));
+        assert!(is_git_ref_like(Path::new("/ws/.git/refs/heads/main")));
+        assert!(is_git_ref_like(Path::new("/ws/.git/refs/remotes/origin/HEAD")));
+        assert!(!is_git_ref_like(Path::new("/ws/.git/index")));
+        assert!(!is_git_ref_like(Path::new("/ws/.git/index.lock")));
+        assert!(!is_git_ref_like(Path::new("/ws/.git/objects/ab/cdef")));
+        assert!(!is_git_ref_like(Path::new("/ws/src/main.rs")));
+    }
 }
