@@ -126,8 +126,8 @@ impl StatusBarLayout {
         if let Some(b) = info.git_branch.filter(|s| !s.is_empty()) {
             line.push_str(&format!("    ·    {b}"));
         }
-        if let Some(n) = info.git_modified_count {
-            line.push_str(&format!("    ·    {n} modified"));
+        if let Some(n) = info.git_modified_count.filter(|n| *n > 0) {
+            line.push_str(&format!("    ·    {n} \u{00B1}"));
         }
         line.push_str(&format!(
             "    ·    Ln {line_n}, Col {col_n} · {lines} lines    ·    {enc} · {le}"

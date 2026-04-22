@@ -2145,7 +2145,11 @@ impl App {
             external_modified: self.external_modified,
             status_message: None,
             git_branch: self.git_branch.clone(),
-            git_modified_count: None,
+            git_modified_count: if self.gutter_marks.is_empty() {
+                None
+            } else {
+                Some(self.gutter_marks.iter().filter(|m| m.is_some()).count())
+            },
         }
     }
 
