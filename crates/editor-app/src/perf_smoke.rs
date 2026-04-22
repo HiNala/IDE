@@ -130,6 +130,7 @@ impl ApplicationHandler for PerfSmokeApp {
                 frame_chrome: None,
                 content_inset_left_px: 0.0,
                 content_inset_top_px: 0.0,
+                content_inset_right_px: 0.0,
                 language: editor_render::editor_syntax::Language::Plain,
             };
             match renderer.render_frame(&input) {
@@ -175,6 +176,7 @@ impl ApplicationHandler for PerfSmokeApp {
                 frame_chrome: None,
                 content_inset_left_px: 0.0,
                 content_inset_top_px: 0.0,
+                content_inset_right_px: 0.0,
                 language: editor_render::editor_syntax::Language::Plain,
             };
             if let Ok(t) = renderer.render_frame(&input) {

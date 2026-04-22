@@ -117,6 +117,11 @@ impl ProviderRegistry {
         Ok(Self { providers, active_id })
     }
 
+    /// True when an active provider is registered and ready.
+    pub fn has_active(&self) -> bool {
+        self.active().is_some()
+    }
+
     pub fn active(&self) -> Option<Arc<dyn AiProvider>> {
         let id = self.active_id.as_ref()?;
         self.providers.get(id).cloned()

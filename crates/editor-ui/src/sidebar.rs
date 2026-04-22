@@ -25,8 +25,9 @@ const ROW_FOCUS_RGBA: [f32; 4] = pal::SIDEBAR_ROW_FOCUS;
 const HEADER_BG_RGBA: [f32; 4] = pal::SIDEBAR_BG;
 const HEADER_RGB: [u8; 3] = pal::SIDEBAR_HEADER_FG;
 const TEXT_RGB: [u8; 3] = pal::SIDEBAR_ROW_FG;
-const TEXT_DIM: [u8; 3] = [0x85, 0x85, 0x85];
-const ACCENT: [u8; 3] = [0xFF, 0xFF, 0xFF];
+const TEXT_DIM: [u8; 3] = pal::SIDEBAR_ROW_FG;
+const ACCENT: [u8; 3] = pal::ACCENT_TEXT;
+const BORDER_RGBA: [f32; 4] = pal::SIDEBAR_BORDER;
 
 /// One visible row in the flattened tree.
 #[derive(Debug, Clone)]
@@ -300,6 +301,14 @@ impl Sidebar {
             height: h,
             rgba: BG_RGBA,
         });
+        // Right border — 1px separator.
+        chrome.push_quad(ChromeQuad {
+            left: origin_x + w - scale,
+            top: origin_y,
+            width: scale,
+            height: h,
+            rgba: BORDER_RGBA,
+        });
 
         // Header strip ("EXPLORER"). Slightly lighter than the column, tiny uppercase label.
         let header_h = HEADER_HEIGHT * scale;
@@ -350,6 +359,14 @@ impl Sidebar {
                     width: w,
                     height: lh,
                     rgba: ROW_FOCUS_RGBA,
+                });
+                // Violet left accent bar for focused row.
+                chrome.push_quad(ChromeQuad {
+                    left: origin_x,
+                    top: y,
+                    width: 1.5 * scale,
+                    height: lh,
+                    rgba: pal::SIDEBAR_ACCENT,
                 });
             } else if is_hover_row {
                 chrome.push_quad(ChromeQuad {

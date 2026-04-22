@@ -8,6 +8,7 @@ members = [
     "crates/editor-ai-provider",
     "crates/editor-ai-tools",
     "crates/editor-app",
+    "crates/editor-chat",
     "crates/editor-core",
     "crates/editor-diff",
     "crates/editor-git",

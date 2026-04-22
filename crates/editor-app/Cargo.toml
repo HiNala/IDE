@@ -22,18 +22,20 @@ name = "editor-app"
 path = "src/main.rs"
 
 [dependencies]
-editor-core       = { path = "../editor-core" }
-editor-render     = { path = "../editor-render" }
-editor-input      = { path = "../editor-input" }
-editor-io         = { path = "../editor-io" }
-editor-ui         = { path = "../editor-ui" }
-editor-workspace  = { path = "../editor-workspace" }
-editor-skills     = { path = "../editor-skills" }
-editor-settings   = { path = "../editor-settings" }
-editor-terminal   = { path = "../editor-terminal" }
-editor-index      = { path = "../editor-index" }
-editor-git        = { path = "../editor-git" }
-editor-search     = { path = "../editor-search" }
+editor-core         = { path = "../editor-core" }
+editor-render       = { path = "../editor-render" }
+editor-input        = { path = "../editor-input" }
+editor-io           = { path = "../editor-io" }
+editor-ui           = { path = "../editor-ui" }
+editor-workspace    = { path = "../editor-workspace" }
+editor-skills       = { path = "../editor-skills" }
+editor-settings     = { path = "../editor-settings" }
+editor-terminal     = { path = "../editor-terminal" }
+editor-index        = { path = "../editor-index" }
+editor-git          = { path = "../editor-git" }
+editor-search       = { path = "../editor-search" }
+editor-ai-provider  = { path = "../editor-ai-provider" }
+editor-chat         = { path = "../editor-chat" }
 
 directories        = { workspace = true }
 serde              = { workspace = true }

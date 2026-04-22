@@ -70,8 +70,10 @@ fn build_layer_text_areas<'a>(
     clip_bottom: i32,
     content_inset_left_px: f32,
     content_inset_top_px: f32,
+    content_inset_right_px: f32,
 ) -> Vec<TextArea<'a>> {
-    let w = physical_size.width as i32;
+    let pw = physical_size.width as f32;
+    let clip_right = (pw - content_inset_right_px).max(0.0).round() as i32;
     let gutter_left = 8.0 + content_inset_left_px;
     let gutter_right = (gutter_left + gutter_w).round() as i32;
     let body_left = gutter_left + gutter_w;
@@ -89,10 +91,10 @@ fn build_layer_text_areas<'a>(
             bounds: TextBounds {
                 left: clip_l,
                 top: clip_t,
-                right: gutter_right,
+                right: gutter_right.min(clip_right),
                 bottom: clip_bottom,
             },
-            default_color: Color::rgb(0x78, 0x78, 0x78),
+            default_color: Color::rgb(0x70, 0x70, 0x8a),
             custom_glyphs: &[],
         });
         areas.push(TextArea {
@@ -100,8 +102,8 @@ fn build_layer_text_areas<'a>(
             left: body_left,
             top,
             scale: 1.0,
-            bounds: TextBounds { left: 0, top: 0, right: w, bottom: clip_bottom },
-            default_color: Color::rgb(0xE0, 0xE0, 0xE0),
+            bounds: TextBounds { left: 0, top: 0, right: clip_right, bottom: clip_bottom },
+            default_color: Color::rgb(0xee, 0xee, 0xf8),
             custom_glyphs: &custom_glyphs_per_line[i],
         });
     }
@@ -142,6 +144,7 @@ fn push_terminal_text_areas<'a>(
     terminal_header_height_px: f32,
     line_h: f32,
     content_inset_left_px: f32,
+    content_inset_right_px: f32,
 ) {
     if terminal_pane_height_px <= 0.5 || snapshot.rows.is_empty() {
         return;
@@ -153,7 +156,7 @@ fn push_terminal_text_areas<'a>(
     let term_top = physical_size.height as f32 - status_h - terminal_pane_height_px
         + terminal_header_height_px
         + 4.0;
-    let w = physical_size.width as i32;
+    let clip_right = (physical_size.width as f32 - content_inset_right_px).max(0.0).round() as i32;
     let h = physical_size.height as i32;
     let term_clip_top = term_top.round().max(0.0) as i32;
     let mut idx = 0usize;
@@ -168,7 +171,7 @@ fn push_terminal_text_areas<'a>(
                 left: x,
                 top,
                 scale: 1.0,
-                bounds: TextBounds { left: 0, top: term_clip_top, right: w, bottom: h },
+                bounds: TextBounds { left: 0, top: term_clip_top, right: clip_right, bottom: h },
                 default_color: Color::rgb(0xe0, 0xe0, 0xe0),
                 custom_glyphs: &[],
             });
@@ -542,6 +545,7 @@ impl TextLayer {
         frame_chrome: Option<&FrameChrome>,
         content_inset_left_px: f32,
         content_inset_top_px: f32,
+        content_inset_right_px: f32,
         language: Language,
     ) -> Result<(), RenderError> {
         if let Some(lines) = settings_overlay {
@@ -620,6 +624,7 @@ impl TextLayer {
             clip_bottom,
             content_inset_left_px,
             content_inset_top_px,
+            content_inset_right_px,
         );
 
         if let (Some(sb), Some(buf)) = (status_bar, self.status_line_buffer.as_ref()) {
@@ -657,6 +662,7 @@ impl TextLayer {
                 terminal_header_height_px,
                 line_h,
                 content_inset_left_px,
+                content_inset_right_px,
             );
         }
 
@@ -724,6 +730,7 @@ impl TextLayer {
                     clip_bottom,
                     content_inset_left_px,
                     content_inset_top_px,
+                    content_inset_right_px,
                 );
                 if let (Some(sb), Some(buf)) = (status_bar, self.status_line_buffer.as_ref()) {
                     let w = physical_size.width as i32;
@@ -759,6 +766,7 @@ impl TextLayer {
                         terminal_header_height_px,
                         line_h,
                         content_inset_left_px,
+                        content_inset_right_px,
                     );
                 }
                 push_frame_chrome_text_areas(

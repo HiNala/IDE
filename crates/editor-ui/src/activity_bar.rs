@@ -9,7 +9,8 @@ use crate::icons::{paint_icon, Icon};
 use crate::theme::palette;
 
 /// Logical width of the activity bar column.
-pub const ACTIVITY_BAR_WIDTH: f32 = 48.0;
+/// Set to 0 — the design integrates navigation directly into the sidebar.
+pub const ACTIVITY_BAR_WIDTH: f32 = 0.0;
 /// Logical icon slot height.
 pub const ACTIVITY_ICON_HEIGHT: f32 = 48.0;
 /// Logical size of the drawn icon inside its slot.

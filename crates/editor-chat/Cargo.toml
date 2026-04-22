@@ -1,0 +1,34 @@
+[package]
+name          = "editor-chat"
+description   = "AI chat session management and agent loop for the IDE (M23)."
+version       = { workspace = true }
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+authors       = { workspace = true }
+license       = { workspace = true }
+repository    = { workspace = true }
+homepage      = { workspace = true }
+documentation = { workspace = true }
+keywords      = { workspace = true }
+categories    = { workspace = true }
+publish       = false
+
+[lints]
+workspace = true
+
+[dependencies]
+editor-ai-provider = { path = "../editor-ai-provider" }
+editor-ai-tools    = { path = "../editor-ai-tools" }
+editor-core        = { path = "../editor-core" }
+editor-workspace   = { path = "../editor-workspace" }
+
+anyhow       = { workspace = true }
+async-trait  = { workspace = true }
+crossbeam-channel = { workspace = true }
+futures      = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+chrono       = { workspace = true }

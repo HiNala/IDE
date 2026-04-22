@@ -68,6 +68,7 @@ fn text_layer_prepare_smoke_large_buffer() {
             None,
             0.0,
             0.0,
+            0.0,
             editor_syntax::Language::Plain,
         )
         .expect("prepare should succeed");

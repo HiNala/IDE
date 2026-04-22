@@ -104,6 +104,9 @@ pub fn map_keyboard_input(
                 KeyCode::KeyC => return Some(EditorCommand::Copy),
                 KeyCode::KeyX => return Some(EditorCommand::Cut),
                 KeyCode::KeyV => return Some(EditorCommand::Paste),
+                KeyCode::KeyA if modifiers.shift_key() => {
+                    return Some(EditorCommand::ToggleAgentPanel)
+                }
                 KeyCode::KeyA => return Some(EditorCommand::SelectAll),
                 KeyCode::Comma => return Some(EditorCommand::OpenSettings),
                 KeyCode::KeyB => return Some(EditorCommand::ToggleSidebar),

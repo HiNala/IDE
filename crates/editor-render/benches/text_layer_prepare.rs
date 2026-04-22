@@ -82,6 +82,7 @@ fn bench_prepare_warm(ctx: &mut BenchCtx) {
             None,
             0.0,
             0.0,
+            0.0,
             editor_syntax::Language::Plain,
         )
         .expect("prepare warmup");
@@ -119,6 +120,7 @@ fn run() {
                     None,
                     0.0,
                     0.0,
+                    0.0,
                     editor_syntax::Language::Plain,
                 )
                 .expect("prepare");
@@ -147,6 +149,7 @@ fn run() {
                     None,
                     None,
                     None,
+                    0.0,
                     0.0,
                     0.0,
                     editor_syntax::Language::Plain,

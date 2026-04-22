@@ -30,8 +30,9 @@ use editor_io::{load_file_sync, save_file_sync, Encoding, LoadError, LoadedFile,
 use editor_settings::{LegacySessionMerge, LineEndingPreference, SettingsStore};
 use editor_terminal::{detect_shell, Terminal, TerminalConfig, TerminalId};
 use editor_ui::{
-    paint_activity_bar, paint_tab_strip, ActivityIcon, ChromeQuad, CommandEntry, CommandPalette,
-    FindBar, FrameChrome, QuickOpenPalette, Sidebar, TabHit, ACTIVITY_BAR_WIDTH, TAB_STRIP_HEIGHT,
+    paint_activity_bar, paint_tab_strip, ActivityIcon, AgentPanel, ChromeQuad, CommandEntry,
+    CommandPalette, FindBar, FrameChrome, QuickOpenPalette, Sidebar, TabHit, ACTIVITY_BAR_WIDTH,
+    TAB_STRIP_HEIGHT,
 };
 use editor_workspace::entry::FileEntry;
 use editor_workspace::{BufferId, BufferManager, FileSystemEvent, Workspace};
@@ -53,8 +54,8 @@ use winit::window::{Fullscreen, Window, WindowId};
 /// Crate / app version from `Cargo.toml`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Dark background (`#1e1e1e`).
-const CLEAR: wgpu::Color = wgpu::Color { r: 0.118, g: 0.118, b: 0.118, a: 1.0 };
+/// Deep obsidian background (`#090910`).
+const CLEAR: wgpu::Color = wgpu::Color { r: 0.035, g: 0.035, b: 0.063, a: 1.0 };
 
 #[derive(Debug)]
 enum AppEvent {
@@ -420,6 +421,7 @@ fn run_windowed(
         ime_suppress_next_keytext: false,
         selection: Selection::empty(BytePos(cursor_byte0)),
         mouse_chord: MouseChordState::default(),
+        pending_chord_prefix: None,
         last_pointer: PhysicalPosition::new(0.0, 0.0),
         drag_anchor: None,
         settings_store,
@@ -444,6 +446,9 @@ fn run_windowed(
             sb.visible = app_sidebar_visible;
             sb
         },
+        agent_panel: AgentPanel::new(),
+        agent_panel_dragging: false,
+        agent_tab_hits: Vec::new(),
         quick_open: QuickOpenPalette::new(),
         command_palette: CommandPalette::new(),
         tab_hits: Vec::new(),
@@ -454,6 +459,21 @@ fn run_windowed(
         gutter_marks_version: None,
         gutter_marks_for_path: None,
         terminal_header_hits: None,
+        chat_engine: {
+            let mut engine = editor_chat::ChatEngine::new(editor_chat::ChatEngineConfig::default());
+            // Attempt to load a provider registry from user settings + keychain.
+            // This is best-effort: if no keys are configured the chat panel shows a prompt.
+            if let Ok(cfg) = editor_ai_provider::load_or_create_default(None) {
+                let secrets = editor_ai_provider::SecretStore::new();
+                match editor_ai_provider::ProviderRegistry::from_config(&cfg, &secrets) {
+                    Ok(reg) => engine.set_registry(reg),
+                    Err(e) => tracing::warn!("AI provider init: {e}"),
+                }
+            }
+            engine
+        },
+        chat_conversations: std::collections::HashMap::new(),
+        chat_input: String::new(),
     };
     app.clamp_cursor_to_buffer();
     app.seed_initial_buffer_into_manager();
@@ -531,6 +551,12 @@ struct App {
     active_buffer_id: Option<BufferId>,
     // --- M14 chrome surfaces ---------------------------------------------------------
     sidebar: Sidebar,
+    /// Right-side agent panel (AI chat input + terminal controls).
+    agent_panel: AgentPanel,
+    /// True while the user is dragging the agent panel's left resize edge.
+    agent_panel_dragging: bool,
+    /// Session tab hit regions from the last painted agent panel frame.
+    agent_tab_hits: Vec<editor_ui::AgentTabHit>,
     quick_open: QuickOpenPalette,
     /// Ctrl+Shift+P command palette (every `EditorCommand` discoverable).
     command_palette: CommandPalette,
@@ -555,7 +581,37 @@ struct App {
     /// when the pane is hidden. Used by mouse routing to detect clicks on
     /// the "Terminal" strip (close button + focus swallow).
     terminal_header_hits: Option<editor_ui::TerminalHeaderHits>,
+    /// Two-key chord state (VS Code style). When `Ctrl+K` is pressed we
+    /// park the prefix here with a timestamp; the next key either completes
+    /// a known chord or the prefix is dropped. Timeout: [`CHORD_TIMEOUT`].
+    pending_chord_prefix: Option<(ChordPrefix, Instant)>,
+    // --- M19/M23 AI chat engine -------------------------------------------------------
+    // Scaffolding: stored today, read once the agent-panel event loop lands in M23.
+    // The fields are held so the registry / conversation state survive the lifetime
+    // of the window and don't have to be re-initialised per frame.
+    /// Async AI streaming engine; spawns tokio tasks and posts [`editor_chat::EngineEvent`]
+    /// back to the winit thread via a crossbeam channel.
+    #[allow(dead_code)]
+    chat_engine: editor_chat::ChatEngine,
+    /// Per-session conversation history — indexed by [`AgentPanel::sessions`] id.
+    #[allow(dead_code)]
+    chat_conversations: std::collections::HashMap<u64, editor_chat::Conversation>,
+    /// Text the user is currently typing in the agent panel input area.
+    #[allow(dead_code)]
+    chat_input: String,
 }
+
+/// The prefix half of a two-key chord. Currently only `Ctrl+K` is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChordPrefix {
+    /// `Ctrl+K` — VS Code's workbench-prefix gate.
+    CtrlK,
+}
+
+/// How long a parked chord prefix is held before being forgotten. Matches
+/// the VS Code default; long enough for muscle memory, short enough that a
+/// stale prefix can't hijack random typing.
+const CHORD_TIMEOUT: Duration = Duration::from_millis(1500);
 
 impl App {
     /// Bottom status bar height in physical pixels (matches `editor-ui` / `TextLayer`).
@@ -684,6 +740,17 @@ impl App {
         let status = self.status_bar_height_px() as f64;
         let term = self.terminal_pane_height_px() as f64;
         y_px >= h - status - term && y_px < h - status
+    }
+
+    /// True when the pointer is on the agent panel's left resize edge.
+    fn pointer_on_agent_panel_edge(&self, x_px: f64) -> bool {
+        if !self.agent_panel.visible {
+            return false;
+        }
+        let Some(w) = self.window.as_ref() else { return false };
+        let edge_x = w.inner_size().width as f64 - self.agent_panel_width_px() as f64;
+        let slop = (5.0_f64 * f64::from(self.scale_factor)).max(3.0);
+        (x_px - edge_x).abs() <= slop
     }
 
     /// Y coordinate (physical px, top-left origin) of the editor/terminal divider.
@@ -1471,6 +1538,61 @@ impl App {
         }
     }
 
+    /// Decode the VS Code-style two-key chord state machine.
+    ///
+    /// Returns `Some(cmd)` when this key press completes a known chord
+    /// (caller should dispatch + return). Returns `None` when the key either
+    /// parked a new prefix (also swallowed by caller) or didn't interact with
+    /// chord state at all (fall through to normal mapping).
+    fn consume_chord_key(&mut self, event: &winit::event::KeyEvent) -> Option<EditorCommand> {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return None;
+        };
+        let primary = self.modifiers.control_key() || self.modifiers.super_key();
+
+        // Drop a stale prefix first so a slow second keystroke can't trigger.
+        if let Some((_, since)) = self.pending_chord_prefix {
+            if since.elapsed() > CHORD_TIMEOUT {
+                self.pending_chord_prefix = None;
+            }
+        }
+
+        // Completion path: a prefix is parked and this key is the second half.
+        if let Some((prefix, _)) = self.pending_chord_prefix {
+            self.pending_chord_prefix = None;
+            match (prefix, code, primary) {
+                // `Ctrl+K Ctrl+O` or `Ctrl+K O` both open a folder. VS Code accepts
+                // either because modifier release between the two presses is timing-
+                // dependent; mirroring that reduces false negatives.
+                (ChordPrefix::CtrlK, KeyCode::KeyO, _) => return Some(EditorCommand::OpenFolder),
+                _ => {
+                    // Unknown second key after a prefix — fall through so the key
+                    // still triggers its own mapping (e.g. Ctrl+K Ctrl+S -> Save).
+                    return None;
+                }
+            }
+        }
+
+        // Prefix path: `Ctrl+K` with no parked prefix becomes the new prefix.
+        if primary && matches!(code, KeyCode::KeyK) {
+            self.pending_chord_prefix = Some((ChordPrefix::CtrlK, Instant::now()));
+            // Swallow by returning a sentinel command: we want the caller's
+            // redraw but no actual action. Easiest: reuse a harmless no-op —
+            // use an empty-string insert that map_key_event would never emit,
+            // and match it to a request_redraw path. Instead, the cleaner way
+            // is to teach the caller about the "prefix parked" signal by
+            // returning None and requesting redraw here.
+            self.request_redraw();
+            // Return None but caller's `if let Some(cmd) = map_key_event` will
+            // then try to map Ctrl+K — which it doesn't know, so the event is
+            // cleanly ignored. Perfect for prefix parking.
+            return None;
+        }
+
+        None
+    }
+
     /// Enter/Space on a directory toggles it; on a file, opens it in a new tab.
     fn activate_highlighted_sidebar_row(&mut self) {
         let Some(rel) = self.sidebar.highlighted.clone() else { return };
@@ -1511,6 +1633,7 @@ impl App {
             ("edit.find_next", "Edit: Find Next", Some("F3")),
             ("edit.find_prev", "Edit: Find Previous", Some("Shift+F3")),
             ("view.sidebar", "View: Toggle Sidebar", Some("Ctrl+B")),
+            ("view.agent_panel", "View: Toggle Agent Panel", Some("Ctrl+Shift+A")),
             ("view.focus_sidebar", "View: Focus Sidebar", Some("Ctrl+Shift+E")),
             ("view.quick_open", "Go: Quick Open", Some("Ctrl+P")),
             ("view.command_palette", "Show Command Palette", Some("Ctrl+Shift+P")),
@@ -1558,6 +1681,7 @@ impl App {
             "edit.find_next" => EditorCommand::FindNext,
             "edit.find_prev" => EditorCommand::FindPrev,
             "view.sidebar" => EditorCommand::ToggleSidebar,
+            "view.agent_panel" => EditorCommand::ToggleAgentPanel,
             "view.focus_sidebar" => EditorCommand::FocusSidebar,
             "view.quick_open" => EditorCommand::ToggleQuickOpen,
             "view.command_palette" => EditorCommand::OpenCommandPalette,
@@ -2218,9 +2342,10 @@ impl App {
         };
         let terminal_pane_height_px = self.terminal_pane_height_px();
 
-        // Build chrome (sidebar + tab strip + quick-open overlay).
+        // Build chrome (sidebar + tab strip + agent panel + quick-open overlay).
         let (chrome_opt, inset_left_px, inset_top_px, tab_hits) = self.build_frame_chrome();
         self.tab_hits = tab_hits;
+        let inset_right_px = self.agent_panel_width_px();
 
         if let (Some(renderer), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) {
             let snap = self.buffer.snapshot();
@@ -2254,6 +2379,7 @@ impl App {
                 frame_chrome: chrome_opt.as_ref(),
                 content_inset_left_px: inset_left_px,
                 content_inset_top_px: inset_top_px,
+                content_inset_right_px: inset_right_px,
                 language: self
                     .open_path
                     .as_deref()
@@ -2285,9 +2411,13 @@ impl App {
         }
     }
 
+    /// Physical pixel width of the agent panel (or 0 when hidden).
+    fn agent_panel_width_px(&self) -> f32 {
+        self.agent_panel.width_px(self.scale_factor)
+    }
+
     /// Build sidebar + tab strip + quick-open chrome for the current frame.
-    /// Returns (Some(chrome), sidebar_width_px, tab_strip_height_px, tab_hits) when any
-    /// surface is visible, else (None, 0, 0, []) so the renderer can skip chrome entirely.
+    /// Returns (Some(chrome), sidebar_width_px, tab_strip_height_px, agent_panel_width_px, tab_hits).
     fn build_frame_chrome(&mut self) -> (Option<FrameChrome>, f32, f32, Vec<TabHit>) {
         // Diff-vs-HEAD cache is version-gated; cheap no-op when stable.
         self.refresh_gutter_marks_if_stale();
@@ -2306,6 +2436,7 @@ impl App {
         let activity_w = ACTIVITY_BAR_WIDTH * scale;
         let sidebar_w = if sidebar_on { self.sidebar.width * scale } else { 0.0 };
         let inset_left_px = activity_w + sidebar_w;
+        let agent_w = self.agent_panel_width_px();
         let tab_top_px = if tabstrip_on { TAB_STRIP_HEIGHT * scale } else { 0.0 };
         let breadcrumbs_top_px = tab_top_px;
         let breadcrumbs_height_px =
@@ -2316,7 +2447,7 @@ impl App {
         let term_h = self.terminal_pane_height_px();
         let column_h = (physical.height as f32 - status_h - term_h).max(1.0);
 
-        // Activity bar: always visible minimal shell.
+        // Activity bar: zero-width in this design, paint call is a no-op.
         let icons = [
             ActivityIcon::new(editor_ui::Icon::Explorer, sidebar_on),
             ActivityIcon::new(editor_ui::Icon::Search, false),
@@ -2326,7 +2457,7 @@ impl App {
         ];
         paint_activity_bar(&mut chrome, scale, column_h, &icons);
 
-        // Sidebar column: right of the activity bar.
+        // Sidebar column: starts at x=0 (activity bar is zero-width).
         if sidebar_on {
             let auto =
                 if let (Some(abs), Some(root)) = (self.open_path.as_ref(), self.workspace_root()) {
@@ -2346,10 +2477,10 @@ impl App {
             );
         }
 
-        // Tab strip: spans right of the sidebar.
+        // Tab strip: spans from sidebar right edge to agent panel left edge.
         let mut tab_hits = Vec::new();
         if tabstrip_on {
-            let strip_w = (physical.width as f32 - inset_left_px).max(0.0);
+            let strip_w = (physical.width as f32 - inset_left_px - agent_w).max(0.0);
             tab_hits = paint_tab_strip(
                 &mut chrome,
                 &self.buffers,
@@ -2363,7 +2494,7 @@ impl App {
 
         // Breadcrumbs strip directly under the tab strip.
         if breadcrumbs_on {
-            let strip_w = (physical.width as f32 - inset_left_px).max(0.0);
+            let strip_w = (physical.width as f32 - inset_left_px - agent_w).max(0.0);
             let rel = self.active_path_rel();
             let _ = editor_ui::paint_breadcrumbs(
                 &mut chrome,
@@ -2375,14 +2506,28 @@ impl App {
             );
         }
 
-        // Vertical scrollbar (always painted when the doc overflows the viewport).
+        // Agent panel: right side, full column height.
+        {
+            let panel_left = physical.width as f32 - agent_w;
+            let panel_h = (physical.height as f32 - status_h).max(1.0);
+            self.agent_tab_hits = self.agent_panel.paint(
+                &mut chrome,
+                scale,
+                panel_left,
+                0.0,
+                panel_h,
+                self.terminal_pane_visible,
+            );
+        }
+
+        // Vertical scrollbar: sits just left of the agent panel.
         if let Some(renderer) = self.renderer.as_ref() {
             let line_h = renderer.line_height_px();
             let input = editor_ui::ScrollbarInput {
                 total_lines: self.buffer.len_lines().max(1),
                 scroll_y_px: self.scroll.y_px,
                 line_height_px: line_h,
-                content_right_px: physical.width as f32,
+                content_right_px: physical.width as f32 - agent_w,
                 content_top_px: inset_top_px,
                 content_bottom_px: (physical.height as f32 - status_h - term_h).max(inset_top_px),
                 scale,
@@ -2424,9 +2569,9 @@ impl App {
             let pane_h = self.terminal_pane_height_px();
             if pane_h > 0.5 {
                 let pane_top = physical.height as f32 - status_h - pane_h;
-                // Pane spans the activity-bar's right edge to the window edge.
                 let pane_left = inset_left_px;
-                let pane_width = (physical.width as f32 - pane_left).max(0.0);
+                // Terminal pane stops at the agent panel left edge.
+                let pane_width = (physical.width as f32 - pane_left - agent_w).max(0.0);
                 Some(editor_ui::paint_terminal_header(
                     &mut chrome,
                     scale,
@@ -2466,18 +2611,13 @@ impl App {
             );
         }
 
-        // Status bar accent — blue when a workspace is open (VS Code convention), else neutral.
-        let status_rgba: [f32; 4] = if self.workspace.is_some() {
-            [0.0, 0.48, 0.80, 1.0] // #007acc
-        } else {
-            [0.20, 0.20, 0.21, 1.0] // #333333
-        };
+        // Status bar — obsidian (#07070b) spanning full width (agent panel paints over its slice).
         chrome.push_quad(ChromeQuad {
             left: 0.0,
             top: physical.height as f32 - status_h,
             width: physical.width as f32,
             height: status_h,
-            rgba: status_rgba,
+            rgba: [0.027, 0.027, 0.043, 1.0], // #07070b
         });
 
         (Some(chrome), inset_left_px, inset_top_px, tab_hits)
@@ -2614,6 +2754,13 @@ impl App {
             }
             EditorCommand::Open => {
                 self.open_via_dialog();
+                false
+            }
+            EditorCommand::OpenFolder => {
+                if let Some(root) = rfd::FileDialog::new().pick_folder() {
+                    self.open_workspace_folder(&root);
+                    self.request_redraw();
+                }
                 false
             }
             EditorCommand::Copy => {
@@ -2889,6 +3036,11 @@ impl App {
                 }
                 false
             }
+            EditorCommand::ToggleAgentPanel => {
+                self.agent_panel.visible = !self.agent_panel.visible;
+                self.request_redraw();
+                false
+            }
             EditorCommand::ToggleSidebar => {
                 self.sidebar.visible = !self.sidebar.visible;
                 if self.sidebar.visible && self.workspace.is_none() {
@@ -3156,6 +3308,20 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_pointer = position;
+                if self.agent_panel_dragging {
+                    // Dragging the agent panel left edge: x_px determines new panel width.
+                    if let Some(w) = self.window.as_ref() {
+                        let win_w = w.inner_size().width as f64;
+                        let new_w_logical =
+                            ((win_w - position.x) / f64::from(self.scale_factor)) as f32;
+                        self.agent_panel.width = new_w_logical.clamp(
+                            editor_ui::agent_panel::AGENT_PANEL_MIN_WIDTH,
+                            editor_ui::agent_panel::AGENT_PANEL_MAX_WIDTH,
+                        );
+                    }
+                    self.request_redraw();
+                    return;
+                }
                 if self.terminal_split_dragging {
                     self.update_terminal_split_from_pointer_y(position.y);
                     self.sync_terminal_size();
@@ -3174,6 +3340,13 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::MouseInput { state, button, .. } if button == MouseButton::Left => {
                 match state {
                     ElementState::Pressed
+                        if self.pointer_on_agent_panel_edge(self.last_pointer.x) =>
+                    {
+                        self.agent_panel_dragging = true;
+                        self.request_redraw();
+                        return;
+                    }
+                    ElementState::Pressed
                         if self.terminal_pane_visible
                             && self.pointer_on_terminal_divider(self.last_pointer.y) =>
                     {
@@ -3184,6 +3357,7 @@ impl ApplicationHandler<AppEvent> for App {
                         return;
                     }
                     ElementState::Released => {
+                        self.agent_panel_dragging = false;
                         self.terminal_split_dragging = false;
                     }
                     ElementState::Pressed => {}
@@ -3309,6 +3483,15 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 if self.handle_sidebar_key(&event) {
+                    return;
+                }
+                if let Some(chord_cmd) = self.consume_chord_key(&event) {
+                    let quit = self.apply_editor_command(chord_cmd);
+                    self.sync_window_title();
+                    self.request_redraw();
+                    if quit {
+                        event_loop.exit();
+                    }
                     return;
                 }
                 if let Some(cmd) = map_key_event(&event, self.modifiers) {

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod activity_bar;
+pub mod agent_panel;
 pub mod breadcrumbs;
 pub mod chrome;
 pub mod command_palette;
@@ -26,6 +27,10 @@ pub mod terminal_header;
 pub mod theme;
 
 pub use activity_bar::{paint_activity_bar, ActivityIcon, ACTIVITY_BAR_WIDTH};
+pub use agent_panel::{
+    AgentPanel, AgentSession, AgentSessionStatus, AgentTabHit, AGENT_PANEL_MAX_WIDTH,
+    AGENT_PANEL_MIN_WIDTH, AGENT_PANEL_WIDTH,
+};
 pub use breadcrumbs::{paint_breadcrumbs, BreadcrumbHit, BREADCRUMBS_HEIGHT};
 pub use chrome::{ChromeQuad, ChromeTextLine, FrameChrome};
 pub use command_palette::{CommandEntry, CommandPalette};

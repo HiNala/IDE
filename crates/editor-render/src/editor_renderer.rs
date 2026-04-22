@@ -57,6 +57,9 @@ pub struct FrameInput<'a> {
     /// M14: shift document text + selection insets (physical px). Zero when chrome is off.
     pub content_inset_left_px: f32,
     pub content_inset_top_px: f32,
+    /// Right inset (physical px) for panels on the right side (e.g. agent panel).
+    /// Text and terminal rendering clip to `window_width - content_inset_right_px`.
+    pub content_inset_right_px: f32,
     /// Source language for syntax highlighting (M15). [`editor_syntax::Language::Plain`]
     /// preserves the pre-highlight path (single attrs per line) with zero overhead.
     pub language: editor_syntax::Language,
@@ -194,6 +197,7 @@ impl EditorRenderer {
             input.frame_chrome,
             input.content_inset_left_px,
             input.content_inset_top_px,
+            input.content_inset_right_px,
             input.language,
         )?;
         let prepare = t_prep.elapsed();

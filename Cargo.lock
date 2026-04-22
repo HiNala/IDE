@@ -1092,6 +1092,8 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "directories",
+ "editor-ai-provider",
+ "editor-chat",
  "editor-core",
  "editor-git",
  "editor-index",
@@ -1115,6 +1117,26 @@ dependencies = [
  "wgpu",
  "winit",
  "winres",
+]
+
+[[package]]
+name = "editor-chat"
+version = "0.1.0-mvp"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "crossbeam-channel",
+ "editor-ai-provider",
+ "editor-ai-tools",
+ "editor-core",
+ "editor-workspace",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

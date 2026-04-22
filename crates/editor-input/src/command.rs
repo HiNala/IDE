@@ -66,6 +66,9 @@ pub enum EditorCommand {
     ScrollContent {
         delta_y_px: f32,
     },
+    /// Open a folder as the active workspace (**Ctrl+K Ctrl+O** chord — VS Code
+    /// convention). Hosts a native folder picker; cancelling is a no-op.
+    OpenFolder,
     /// Toggle integrated terminal pane (M26: **Ctrl+`**).
     ToggleTerminalPane,
     /// Spawn another integrated terminal session (M26: **Ctrl+Shift+`**).
@@ -82,6 +85,8 @@ pub enum EditorCommand {
     NewBuffer,
     /// Toggle project sidebar (**Ctrl+B**).
     ToggleSidebar,
+    /// Toggle the agent panel on the right (**Ctrl+Shift+A**).
+    ToggleAgentPanel,
     /// Toggle quick-open palette (**Ctrl+P**).
     ToggleQuickOpen,
     /// Open the command palette listing every in-app action (**Ctrl+Shift+P**).
