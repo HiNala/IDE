@@ -84,6 +84,8 @@ pub enum EditorCommand {
     ToggleSidebar,
     /// Toggle quick-open palette (**Ctrl+P**).
     ToggleQuickOpen,
+    /// Open the command palette listing every in-app action (**Ctrl+Shift+P**).
+    OpenCommandPalette,
     /// Focus sidebar for keyboard navigation (**Ctrl+Shift+E**).
     FocusSidebar,
     /// Open in-buffer find bar (**Ctrl+F**). Hides replace row.

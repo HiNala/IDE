@@ -16,13 +16,15 @@ pub const ROW_LINE_HEIGHT: f32 = 22.0;
 pub const HEADER_HEIGHT: f32 = 32.0;
 const INDENT_PER_DEPTH: f32 = 14.0;
 const LEFT_PAD: f32 = 12.0;
-// VS Code Dark+ palette.
-const BG_RGBA: [f32; 4] = [0.145, 0.145, 0.149, 1.0]; // #252526
-const ROW_HL_RGBA: [f32; 4] = [0.165, 0.178, 0.184, 1.0]; // #2a2d2e
-const ROW_FOCUS_RGBA: [f32; 4] = [0.024, 0.31, 0.54, 0.85]; // #04558a (focused row on sidebar)
-const HEADER_BG_RGBA: [f32; 4] = [0.145, 0.145, 0.149, 1.0];
-const HEADER_RGB: [u8; 3] = [0xBB, 0xBB, 0xBB];
-const TEXT_RGB: [u8; 3] = [0xCC, 0xCC, 0xCC];
+
+// Palette references — source of truth lives in `crate::theme::palette`.
+use crate::theme::palette as pal;
+const BG_RGBA: [f32; 4] = pal::SIDEBAR_BG;
+const ROW_HL_RGBA: [f32; 4] = pal::SIDEBAR_ROW_HOVER;
+const ROW_FOCUS_RGBA: [f32; 4] = pal::SIDEBAR_ROW_FOCUS;
+const HEADER_BG_RGBA: [f32; 4] = pal::SIDEBAR_BG;
+const HEADER_RGB: [u8; 3] = pal::SIDEBAR_HEADER_FG;
+const TEXT_RGB: [u8; 3] = pal::SIDEBAR_ROW_FG;
 const TEXT_DIM: [u8; 3] = [0x85, 0x85, 0x85];
 const ACCENT: [u8; 3] = [0xFF, 0xFF, 0xFF];
 

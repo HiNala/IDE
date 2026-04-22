@@ -27,7 +27,7 @@ members = [
 [workspace.package]
 version       = "0.1.0-mvp"
 edition       = "2021"
-rust-version  = "1.94.1"
+rust-version  = "1.95.0"
 authors       = ["HiNala <nalamaui30@gmail.com>"]
 license       = "MIT OR Apache-2.0"
 repository    = "https://github.com/HiNala/IDE"

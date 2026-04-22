@@ -19,7 +19,7 @@ Versions are pinned to **minor** in `Cargo.toml` (e.g. `"0.30"`, not
 
 | Tool | Locked Version | Rationale |
 |---|---|---|
-| **Rust** | `1.94.1` (stable) | Latest stable at M01 (April 2026); pinned via `rust-toolchain.toml`. No nightly-only features are used. |
+| **Rust** | `1.95.0` (stable) | Latest stable at M01 verification time (April 2026); pinned via `rust-toolchain.toml`. No nightly-only features are used. |
 | **Cargo** | bundled with rustc | Workspace + build + test + bench, one tool. |
 | **rustup** | any recent | Only used to pin the toolchain via `rust-toolchain.toml`. |
 
@@ -52,7 +52,7 @@ narrowest sensible abstraction.
 | [`ropey`](https://docs.rs/ropey) | `1` (stable line; `2.0-beta` not yet adopted) | Mature rope implementation with excellent performance characteristics; used by Helix. Considered alternatives: `crop`, `xi-rope` — ropey wins on ergonomics and test coverage. We pin to the `1.x` stable line; `2.0` is still in beta as of M01. |
 | [`cosmic-text`](https://docs.rs/cosmic-text) | pinned at M04 adoption | High-quality shaping + layout with system-font discovery; drives `glyphon`. Version chosen to match `glyphon` at M04. |
 | [`glyphon`](https://docs.rs/glyphon) | `0.11` | GPU glyph-atlas renderer sitting on top of `cosmic-text` and `wgpu`. Current stable (April 2026). |
-| [`unicode-segmentation`](https://docs.rs/unicode-segmentation) | `1.11` | Grapheme-correct cursor movement and selection. |
+| [`unicode-segmentation`](https://docs.rs/unicode-segmentation) | `1.13` | Grapheme-correct cursor movement and selection. |
 | [`unicode-width`](https://docs.rs/unicode-width) | `0.1` | Column width computation for tab stops, status bar alignment. |
 
 Rationale for `ropey` vs. custom rope: ropey already solves the CRLF / grapheme
@@ -74,7 +74,7 @@ always fork it if profiling demands it.
 |---|---|---|
 | [`memmap2`](https://docs.rs/memmap2) | `0.9` | Memory-mapped large-file reads. `memmap2` (not `memmap`) for active maintenance. |
 | [`tempfile`](https://docs.rs/tempfile) | `3` | Safe temp-file creation for atomic save, on all platforms. |
-| [`directories`](https://docs.rs/directories) | `5` | Cross-platform config/cache dir lookup (`%APPDATA%`, `~/.config`, `~/Library/...`). |
+| [`directories`](https://docs.rs/directories) | `6` | Cross-platform config/cache dir lookup (`%APPDATA%`, `~/.config`, `~/Library/...`). |
 | [`encoding_rs`](https://docs.rs/encoding_rs) | `0.8` | Non-UTF-8 file decoding (Windows-1252, etc.) with WHATWG-conformant handling. Deferred feature, but pinning now prevents churn. |
 
 ## Observability
@@ -89,7 +89,7 @@ always fork it if profiling demands it.
 
 | Crate | Locked Version | Rationale |
 |---|---|---|
-| [`thiserror`](https://docs.rs/thiserror) | `1` | Ergonomic `Error` derive for library crates. |
+| [`thiserror`](https://docs.rs/thiserror) | `2` | Ergonomic `Error` derive for library crates. |
 | [`anyhow`](https://docs.rs/anyhow) | `1` | Ergonomic error propagation in the binary crate only. |
 
 Library crates (`editor-core`, `editor-render`, `editor-input`, `editor-io`)

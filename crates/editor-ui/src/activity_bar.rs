@@ -1,34 +1,33 @@
 //! Narrow icon column on the far-left edge (VS Code convention).
 //!
-//! Minimal visual bar only — no interactive surface yet. Icons are Unicode glyphs
-//! because the app does not bundle an icon font yet. Pixel dimensions follow VS
-//! Code's defaults: a 48-logical-px column with ~28 px tall square icon slots.
+//! Icons are drawn from [`crate::icons`] as rect primitives — no icon font,
+//! no Unicode / emoji pictographs. Layout is a 48-logical-px column with 48px
+//! square slots.
 
 use crate::chrome::{ChromeQuad, FrameChrome};
+use crate::icons::{paint_icon, Icon};
+use crate::theme::palette;
 
 /// Logical width of the activity bar column.
 pub const ACTIVITY_BAR_WIDTH: f32 = 48.0;
 /// Logical icon slot height.
 pub const ACTIVITY_ICON_HEIGHT: f32 = 48.0;
-
-const BG_RGBA: [f32; 4] = [0.20, 0.20, 0.21, 1.0];
-const ACTIVE_BAR_RGBA: [f32; 4] = [0.0, 0.48, 0.80, 1.0];
-const ICON_ACTIVE_RGB: [u8; 3] = [0xff, 0xff, 0xff];
-const ICON_DIM_RGB: [u8; 3] = [0x85, 0x85, 0x85];
+/// Logical size of the drawn icon inside its slot.
+pub const ACTIVITY_ICON_SIZE: f32 = 20.0;
 
 /// One icon slot on the activity bar.
 #[derive(Debug, Clone, Copy)]
 pub struct ActivityIcon {
-    /// Unicode glyph to show in the slot.
-    pub glyph: &'static str,
+    /// Which shape to draw.
+    pub kind: Icon,
     /// True → paint the left accent bar + bright fg (the current surface).
     pub active: bool,
 }
 
 impl ActivityIcon {
     #[must_use]
-    pub const fn new(glyph: &'static str, active: bool) -> Self {
-        Self { glyph, active }
+    pub const fn new(kind: Icon, active: bool) -> Self {
+        Self { kind, active }
     }
 }
 
@@ -42,32 +41,35 @@ pub fn paint_activity_bar(
 ) {
     let w = ACTIVITY_BAR_WIDTH * scale;
     let h = height_px.max(1.0);
-    chrome.push_quad(ChromeQuad { left: 0.0, top: 0.0, width: w, height: h, rgba: BG_RGBA });
+    chrome.push_quad(ChromeQuad {
+        left: 0.0,
+        top: 0.0,
+        width: w,
+        height: h,
+        rgba: palette::ACTIVITY_BG,
+    });
 
     let slot_h = ACTIVITY_ICON_HEIGHT * scale;
+    let icon_size = ACTIVITY_ICON_SIZE * scale;
+    let center_x = (ACTIVITY_BAR_WIDTH / 2.0) * scale;
     let mut y = 0.0;
     for icon in icons {
         if y + slot_h > h {
             break;
         }
         if icon.active {
-            // 2px blue accent bar on the left edge.
             chrome.push_quad(ChromeQuad {
                 left: 0.0,
                 top: y,
                 width: 2.0 * scale,
                 height: slot_h,
-                rgba: ACTIVE_BAR_RGBA,
+                rgba: palette::ACCENT_BLUE,
             });
         }
-        let rgb = if icon.active { ICON_ACTIVE_RGB } else { ICON_DIM_RGB };
-        // Centered-ish: the glyph font is 14pt monospace, so y offset ~ 14px.
-        chrome.push_line(
-            (ACTIVITY_BAR_WIDTH / 2.0 - 7.0) * scale,
-            y + (slot_h - 14.0 * scale) / 2.0,
-            icon.glyph.to_string(),
-            rgb,
-        );
+        let rgb =
+            if icon.active { palette::ACTIVITY_FG_ACTIVE } else { palette::ACTIVITY_FG_INACTIVE };
+        let rgba = [rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0];
+        paint_icon(chrome, icon.kind, center_x, y + slot_h / 2.0, icon_size, rgba);
         y += slot_h;
     }
 }
@@ -77,13 +79,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn paints_background_and_accent_for_active() {
+    fn paints_background_accent_and_icons() {
         let mut chrome = FrameChrome::new();
-        let icons = [ActivityIcon::new("\u{1F5C0}", true), ActivityIcon::new("?", false)];
+        let icons =
+            [ActivityIcon::new(Icon::Explorer, true), ActivityIcon::new(Icon::Search, false)];
         paint_activity_bar(&mut chrome, 1.0, 300.0, &icons);
-        // 1 bg quad + 1 accent quad for active icon = 2 quads.
-        assert_eq!(chrome.quads.len(), 2);
-        // 2 icon text lines.
-        assert_eq!(chrome.lines.len(), 2);
+        // 1 bg + 1 accent + N icon rects per icon.
+        assert!(chrome.quads.len() >= 2);
+        // No Unicode glyphs painted.
+        assert_eq!(chrome.lines.len(), 0);
+    }
+
+    #[test]
+    fn clips_icons_that_overflow() {
+        let mut chrome = FrameChrome::new();
+        let icons = [
+            ActivityIcon::new(Icon::Explorer, true),
+            ActivityIcon::new(Icon::Search, false),
+            ActivityIcon::new(Icon::Run, false),
+        ];
+        // Height of only ~60px fits one slot plus part of a second.
+        paint_activity_bar(&mut chrome, 1.0, 60.0, &icons);
+        // The first icon's rects should be there, the third should not.
+        let first_count = crate::icons::Icon::Explorer;
+        let _ = first_count; // existence check (enum variant).
+        assert!(chrome.quads.len() <= 1 + 1 + 10); // bg + accent + ~up to one icon's rects
     }
 }

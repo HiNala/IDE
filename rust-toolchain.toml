@@ -3,7 +3,7 @@
 #
 # Reference: https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
 [toolchain]
-channel = "1.94.1"
+channel = "1.95.0"
 components = ["rustfmt", "clippy", "rust-src"]
 profile = "default"
 targets = [

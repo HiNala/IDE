@@ -107,7 +107,12 @@ pub fn map_keyboard_input(
                 KeyCode::KeyA => return Some(EditorCommand::SelectAll),
                 KeyCode::Comma => return Some(EditorCommand::OpenSettings),
                 KeyCode::KeyB => return Some(EditorCommand::ToggleSidebar),
-                KeyCode::KeyP => return Some(EditorCommand::ToggleQuickOpen),
+                KeyCode::KeyP => {
+                    if modifiers.shift_key() {
+                        return Some(EditorCommand::OpenCommandPalette);
+                    }
+                    return Some(EditorCommand::ToggleQuickOpen);
+                }
                 KeyCode::KeyE if modifiers.shift_key() => return Some(EditorCommand::FocusSidebar),
                 KeyCode::KeyF => return Some(EditorCommand::FindInFile),
                 KeyCode::KeyH => return Some(EditorCommand::ReplaceInFile),

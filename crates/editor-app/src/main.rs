@@ -30,8 +30,8 @@ use editor_io::{load_file_sync, save_file_sync, Encoding, LoadError, LoadedFile,
 use editor_settings::{LegacySessionMerge, LineEndingPreference, SettingsStore};
 use editor_terminal::{detect_shell, Terminal, TerminalConfig, TerminalId};
 use editor_ui::{
-    paint_activity_bar, paint_tab_strip, ActivityIcon, ChromeQuad, FindBar, FrameChrome,
-    QuickOpenPalette, Sidebar, TabHit, ACTIVITY_BAR_WIDTH, TAB_STRIP_HEIGHT,
+    paint_activity_bar, paint_tab_strip, ActivityIcon, ChromeQuad, CommandEntry, CommandPalette,
+    FindBar, FrameChrome, QuickOpenPalette, Sidebar, TabHit, ACTIVITY_BAR_WIDTH, TAB_STRIP_HEIGHT,
 };
 use editor_workspace::entry::FileEntry;
 use editor_workspace::{BufferId, BufferManager, FileSystemEvent, Workspace};
@@ -445,6 +445,7 @@ fn run_windowed(
             sb
         },
         quick_open: QuickOpenPalette::new(),
+        command_palette: CommandPalette::new(),
         tab_hits: Vec::new(),
         find_bar: FindBar::default(),
         git_branch: None,
@@ -527,6 +528,8 @@ struct App {
     // --- M14 chrome surfaces ---------------------------------------------------------
     sidebar: Sidebar,
     quick_open: QuickOpenPalette,
+    /// Ctrl+Shift+P command palette (every `EditorCommand` discoverable).
+    command_palette: CommandPalette,
     /// Tab hit boxes from the last frame's `paint_tab_strip` — used by mouse routing.
     tab_hits: Vec<TabHit>,
     // --- M16 in-buffer find / replace -----------------------------------------------
@@ -1450,6 +1453,138 @@ impl App {
         }
     }
 
+    /// Seed the command palette with the app's inventory of `EditorCommand`s
+    /// the first time the palette is opened. Idempotent: subsequent calls do
+    /// nothing because the entry list never changes at runtime.
+    fn ensure_command_palette_seeded(&mut self) {
+        if !self.command_palette.is_empty() {
+            return;
+        }
+        // (id, title, keybinding-hint). `id` must match the branch in
+        // `apply_command_palette_selection` below.
+        const ENTRIES: &[(&str, &str, Option<&str>)] = &[
+            ("file.new", "File: New Buffer", Some("Ctrl+N")),
+            ("file.open", "File: Open...", Some("Ctrl+O")),
+            ("file.save", "File: Save", Some("Ctrl+S")),
+            ("file.close", "File: Close Buffer", Some("Ctrl+W")),
+            ("edit.undo", "Edit: Undo", Some("Ctrl+Z")),
+            ("edit.redo", "Edit: Redo", Some("Ctrl+Y")),
+            ("edit.cut", "Edit: Cut", Some("Ctrl+X")),
+            ("edit.copy", "Edit: Copy", Some("Ctrl+C")),
+            ("edit.paste", "Edit: Paste", Some("Ctrl+V")),
+            ("edit.select_all", "Edit: Select All", Some("Ctrl+A")),
+            ("edit.find", "Edit: Find in File", Some("Ctrl+F")),
+            ("edit.replace", "Edit: Replace in File", Some("Ctrl+H")),
+            ("edit.find_next", "Edit: Find Next", Some("F3")),
+            ("edit.find_prev", "Edit: Find Previous", Some("Shift+F3")),
+            ("view.sidebar", "View: Toggle Sidebar", Some("Ctrl+B")),
+            ("view.focus_sidebar", "View: Focus Sidebar", Some("Ctrl+Shift+E")),
+            ("view.quick_open", "Go: Quick Open", Some("Ctrl+P")),
+            ("view.command_palette", "Show Command Palette", Some("Ctrl+Shift+P")),
+            ("view.fullscreen", "View: Toggle Fullscreen", Some("F11")),
+            ("view.dev_hud", "View: Toggle Developer HUD", Some("Ctrl+F11")),
+            ("view.terminal", "View: Toggle Terminal", Some("Ctrl+`")),
+            ("view.terminal_new", "Terminal: New Session", Some("Ctrl+Shift+`")),
+            ("buffer.next", "Buffer: Next", Some("Ctrl+Tab")),
+            ("buffer.prev", "Buffer: Previous", Some("Ctrl+Shift+Tab")),
+            ("pref.settings", "Preferences: Open Settings", Some("Ctrl+,")),
+            ("app.quit", "Quit", Some("Ctrl+Q")),
+        ];
+        let entries: Vec<CommandEntry> = ENTRIES
+            .iter()
+            .map(|(id, title, hint)| CommandEntry {
+                id,
+                title: (*title).to_string(),
+                hint: hint.map(|s| s.to_string()),
+            })
+            .collect();
+        self.command_palette.set_entries(entries);
+    }
+
+    /// Dispatch the currently highlighted command from the palette and hide it.
+    /// Returns `true` when something was dispatched (caller should skip other handlers).
+    fn apply_command_palette_selection(&mut self) -> bool {
+        let Some(id) = self.command_palette.selected_id() else {
+            self.command_palette.hide();
+            return true;
+        };
+        self.command_palette.hide();
+        let cmd = match id {
+            "file.new" => EditorCommand::NewBuffer,
+            "file.open" => EditorCommand::Open,
+            "file.save" => EditorCommand::Save,
+            "file.close" => EditorCommand::CloseBuffer,
+            "edit.undo" => EditorCommand::Undo,
+            "edit.redo" => EditorCommand::Redo,
+            "edit.cut" => EditorCommand::Cut,
+            "edit.copy" => EditorCommand::Copy,
+            "edit.paste" => EditorCommand::Paste,
+            "edit.select_all" => EditorCommand::SelectAll,
+            "edit.find" => EditorCommand::FindInFile,
+            "edit.replace" => EditorCommand::ReplaceInFile,
+            "edit.find_next" => EditorCommand::FindNext,
+            "edit.find_prev" => EditorCommand::FindPrev,
+            "view.sidebar" => EditorCommand::ToggleSidebar,
+            "view.focus_sidebar" => EditorCommand::FocusSidebar,
+            "view.quick_open" => EditorCommand::ToggleQuickOpen,
+            "view.command_palette" => EditorCommand::OpenCommandPalette,
+            "view.fullscreen" => EditorCommand::ToggleFullscreen,
+            "view.dev_hud" => EditorCommand::ToggleDevHud,
+            "view.terminal" => EditorCommand::ToggleTerminalPane,
+            "view.terminal_new" => EditorCommand::NewIntegratedTerminal,
+            "buffer.next" => EditorCommand::NextBuffer,
+            "buffer.prev" => EditorCommand::PrevBuffer,
+            "pref.settings" => EditorCommand::OpenSettings,
+            "app.quit" => EditorCommand::Quit,
+            other => {
+                warn!("command palette: unknown id {other:?}");
+                return true;
+            }
+        };
+        let _ = self.apply_editor_command(cmd);
+        true
+    }
+
+    /// Handle a key press while the command palette is visible. Mirrors the
+    /// quick-open palette conventions (Enter selects, Esc dismisses, arrows
+    /// move, printable chars filter, Backspace pops).
+    fn handle_command_palette_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return false;
+        };
+        match code {
+            KeyCode::Escape => {
+                self.command_palette.hide();
+                true
+            }
+            KeyCode::Enter => self.apply_command_palette_selection(),
+            KeyCode::ArrowUp => {
+                self.command_palette.move_selection(-1);
+                true
+            }
+            KeyCode::ArrowDown => {
+                self.command_palette.move_selection(1);
+                true
+            }
+            KeyCode::Backspace => {
+                self.command_palette.backspace();
+                true
+            }
+            _ => {
+                if let Some(t) = event.text.as_ref() {
+                    if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
+                        for ch in t.chars() {
+                            self.command_palette.push_char(ch);
+                        }
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
     /// Handle a key press when the quick-open palette is active.
     /// Returns `true` when the palette consumed the event (caller should not dispatch further).
     fn handle_quick_open_key(&mut self, event: &winit::event::KeyEvent) -> bool {
@@ -1579,6 +1714,11 @@ impl App {
         // Quick-open overlay: outside-click dismisses; inside is swallowed (Enter/Esc handle selection).
         if self.quick_open.visible {
             self.quick_open.hide();
+            self.request_redraw();
+            return;
+        }
+        if self.command_palette.visible {
+            self.command_palette.hide();
             self.request_redraw();
             return;
         }
@@ -2013,11 +2153,11 @@ impl App {
 
         // Activity bar: always visible minimal shell.
         let icons = [
-            ActivityIcon::new("\u{1F5CE}", sidebar_on), // 🗎 files / explorer
-            ActivityIcon::new("\u{1F50D}", false),      // 🔍 search
-            ActivityIcon::new("\u{f1d3}", false),       // source control (private-use; shows as □)
-            ActivityIcon::new("\u{25B6}", false),       // ▶ run
-            ActivityIcon::new("\u{2699}", false),       // ⚙ settings (bottom spacer is manual)
+            ActivityIcon::new(editor_ui::Icon::Explorer, sidebar_on),
+            ActivityIcon::new(editor_ui::Icon::Search, false),
+            ActivityIcon::new(editor_ui::Icon::SourceControl, false),
+            ActivityIcon::new(editor_ui::Icon::Run, false),
+            ActivityIcon::new(editor_ui::Icon::Settings, false),
         ];
         paint_activity_bar(&mut chrome, scale, column_h, &icons);
 
@@ -2064,6 +2204,16 @@ impl App {
         // Quick-open palette: dim overlay + centered card.
         if self.quick_open.visible {
             self.quick_open.paint(
+                &mut chrome,
+                scale,
+                physical.width as f32,
+                physical.height as f32,
+            );
+        }
+
+        // Command palette (Ctrl+Shift+P).
+        if self.command_palette.visible {
+            self.command_palette.paint(
                 &mut chrome,
                 scale,
                 physical.width as f32,
@@ -2479,6 +2629,11 @@ impl App {
                     self.request_redraw();
                     return false;
                 }
+                if self.command_palette.visible {
+                    self.command_palette.hide();
+                    self.request_redraw();
+                    return false;
+                }
                 if self.sidebar.focused {
                     self.sidebar.focused = false;
                     self.request_redraw();
@@ -2527,6 +2682,17 @@ impl App {
                     } else {
                         self.quick_open.show();
                     }
+                }
+                self.request_redraw();
+                false
+            }
+            EditorCommand::OpenCommandPalette => {
+                self.ensure_command_palette_seeded();
+                if self.command_palette.visible {
+                    self.command_palette.hide();
+                } else {
+                    self.command_palette.clear_query();
+                    self.command_palette.show();
                 }
                 self.request_redraw();
                 false
@@ -2760,39 +2926,38 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                 }
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left {
-                    match state {
-                        ElementState::Pressed => {
-                            if self.terminal_pane_visible
-                                && self.pointer_on_terminal_divider(self.last_pointer.y)
-                            {
-                                self.terminal_split_dragging = true;
-                                self.update_terminal_split_from_pointer_y(self.last_pointer.y);
-                                self.sync_terminal_size();
-                                self.request_redraw();
-                                return;
-                            }
-                        }
-                        ElementState::Released => {
-                            self.terminal_split_dragging = false;
-                        }
-                    }
-                    if let Some(cmd) = self.mouse_chord.on_left_button(
-                        state,
-                        button,
-                        self.last_pointer,
-                        self.modifiers,
-                    ) {
-                        let quit = self.apply_editor_command(cmd);
-                        self.sync_window_title();
+            WindowEvent::MouseInput { state, button, .. } if button == MouseButton::Left => {
+                match state {
+                    ElementState::Pressed
+                        if self.terminal_pane_visible
+                            && self.pointer_on_terminal_divider(self.last_pointer.y) =>
+                    {
+                        self.terminal_split_dragging = true;
+                        self.update_terminal_split_from_pointer_y(self.last_pointer.y);
+                        self.sync_terminal_size();
                         self.request_redraw();
-                        if quit {
-                            event_loop.exit();
-                        }
+                        return;
+                    }
+                    ElementState::Released => {
+                        self.terminal_split_dragging = false;
+                    }
+                    ElementState::Pressed => {}
+                }
+                if let Some(cmd) = self.mouse_chord.on_left_button(
+                    state,
+                    button,
+                    self.last_pointer,
+                    self.modifiers,
+                ) {
+                    let quit = self.apply_editor_command(cmd);
+                    self.sync_window_title();
+                    self.request_redraw();
+                    if quit {
+                        event_loop.exit();
                     }
                 }
             }
+            WindowEvent::MouseInput { .. } => {}
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = scroll_delta_y_pixels(delta, self.scale_factor);
                 if dy == 0.0 {
@@ -2848,6 +3013,13 @@ impl ApplicationHandler<AppEvent> for App {
                         self.request_redraw();
                         return;
                     }
+                    if self.command_palette.visible && !text.is_empty() {
+                        for ch in text.chars() {
+                            self.command_palette.push_char(ch);
+                        }
+                        self.request_redraw();
+                        return;
+                    }
                     if self.terminal_focus
                         && self.terminal_pane_visible
                         && self.settings_overlay_lines.is_none()
@@ -2884,6 +3056,10 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 if self.quick_open.visible && self.handle_quick_open_key(&event) {
+                    self.request_redraw();
+                    return;
+                }
+                if self.command_palette.visible && self.handle_command_palette_key(&event) {
                     self.request_redraw();
                     return;
                 }

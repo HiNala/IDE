@@ -17,7 +17,7 @@ _(One paragraph: what shipped in V3, whether all six vision tests passed, and an
 |------|--------|
 | Machine | _TBD_ |
 | OS | _TBD_ |
-| Rust toolchain | _e.g. 1.94.1_ |
+| Rust toolchain | _e.g. 1.95.0_ |
 | Test workspace | _e.g. clean clone of this repo + fixture project_ |
 
 ---
