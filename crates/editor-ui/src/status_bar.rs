@@ -103,7 +103,7 @@ impl StatusBarLayout {
     pub fn from_info_ref(info: &StatusBarInfoRef<'_>, scale_factor: f32) -> Self {
         let height_px = 24.0 * scale_factor;
         let prefix = if info.dirty { "*" } else { "" };
-        let ext = if info.external_modified { "⚠ " } else { "" };
+        let ext = if info.external_modified { "[!] " } else { "" };
         let path_str =
             info.path.map(|p| p.display().to_string()).unwrap_or_else(|| "untitled".to_string());
         let path_disp = truncate_path_tail(&path_str, 72);
@@ -192,7 +192,7 @@ mod tests {
             git_modified_count: None,
         };
         let l = StatusBarLayout::from_info(&info, 1.0);
-        assert!(l.line.contains('⚠'));
+        assert!(l.line.contains("[!]"));
     }
 
     #[test]

@@ -32,6 +32,14 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  no-emoji:
+    name: no-emoji lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Scan Rust sources for emoji
+        run: bash scripts/check-no-emoji.sh
+
   clippy:
     name: clippy / ${{ matrix.os }}
     strategy:

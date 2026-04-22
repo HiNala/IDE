@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn grapheme_cluster() {
-        let b = TextBuffer::from_str("a👨‍👩‍👧‍👦b");
+        let b = TextBuffer::from_str("a👨‍👩‍👧‍👦b"); // allow-emoji: grapheme-cursor fixture
         let mut c = Cursor::new(BytePos(0));
         c.apply(CursorMotion::Right, &b).unwrap();
         assert_eq!(c.pos().0, 1);
