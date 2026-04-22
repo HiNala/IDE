@@ -35,7 +35,7 @@
 | **M12** | Resize / DPI polish | **Done (code)** | Sync resize/DPI paint, present mode, battery cap, row scratch, `gpu_resize_stress`, CI `m12-gpu-resize-windows`. | Release QA: videos, logged p99 acceptance, `m12-complete` tag. |
 | **M13** | Workspace & multi-buffer | **Done (code)** | `editor-workspace` crate: `Workspace`, `BufferManager` (MRU), `FileSystemEvent` (notify). Wired in `editor-app`. Coherence tests in `crates/editor-workspace/tests/m13_coherence.rs`. Workspace FS events flag `external_modified` on matching buffers. | Buffer-switch does not preserve `UndoStack` history (documented in `FOLLOWUPS.md`). |
 | **M14** | Sidebar, tabs, quick open | **Done (code)** | `editor-ui::{Sidebar, TabStrip, QuickOpenPalette, CommandPalette}` painted via `FrameChrome`. `Ctrl+B` / `Ctrl+Shift+E` / `Ctrl+P` / `Ctrl+Shift+P` / `Ctrl+Tab` / `Ctrl+W` / `Ctrl+N` wired. Sidebar keyboard navigation (`Up/Down/Home/End/PageUp/PageDown`, `Left`/`Right` collapse/expand, `Enter/Space` activate, `Esc` defocus). Tab close X + dirty dot are rect-based icons. Breadcrumbs strip under the tab bar. Mouse routing respects chrome zones. Keyboard intercept while any palette visible. Sidebar width/visibility persist. `editor-app <dir>` auto-opens workspace. | Explicit `Ctrl+K Ctrl+O` keybinding for folder-open; dirty-guard dialog on `Ctrl+W`; clickable breadcrumb navigation. |
-| **M15** | Syntax highlighting | **Partial** | `editor-syntax` crate: hand-written single-line Rust lexer (keywords, types, strings, chars, line + block comments, numbers, attributes, macros, lifetimes). `editor-render::TextLayer` shapes colored runs via `cosmic_text::Buffer::set_rich_text`. Theme exposes 9 syntax slots; colors mapped per `TokenKind`. `Language::from_path` drives auto-detection in `editor-app`. | `tree-sitter` backend behind the same `Language` contract; TOML + JSON + Markdown grammars; incremental multi-line state (block-comment continuation across lines). |
+| **M15** | Syntax highlighting | **Done (code)** | `editor-syntax` crate: hand-written single-line lexers for Rust, TOML, JSON (+ JSONC / JSON5), Markdown. `LineState` carrier threads Rust's nested `/* ... */` across lines (2048-line prelude scan in `fill_visible_lines`). `editor-render::TextLayer` shapes colored runs via `cosmic_text::Buffer::set_rich_text`. Theme exposes 9 syntax slots; colors mapped per `TokenKind`. `Language::from_path` auto-detects via extension + well-known filenames (`Cargo.lock`, `rust-toolchain`). 60 crate tests. | `tree-sitter` backend behind the same `Language` contract; grammars for TS/JS/Python/HTML/CSS/YAML; semantic tokens beyond pure lexical classes (e.g. variable vs type resolution). |
 | **M16** | Find / Replace | **Library only** | `editor-search::{in_file, project}` matchers (regex + literal); `editor-ui::find_bar` text state. | `Ctrl+F` UI in `editor-app`, match highlights painted via `FrameChrome`, `Ctrl+H` replace, project-wide results panel. |
 | **M17** | Diff engine & renderer | **Partial** | `editor-diff`: `compute.rs` Myers diff + `intra_line.rs` + `session.rs` + `display.rs`. `editor-ui::gutter_marks` painted at the left gutter edge from a cached `hunks` list that refreshes version-gated. | Inline preview / side-by-side diff view mode; review sidebar for multi-file changes. |
 | **M18** | Git integration baseline | **Partial** | `editor-git::GitRepo::discover` + branch read via `gix`. Branch name in status bar, refreshed every 5s. Per-file modified line count rendered as `N ±` next to the branch (from the same gutter-marks cache that drives the left-edge stripes). | Watch `.git/HEAD` instead of polling; stage/commit/diff/push/pull UI. |
@@ -56,6 +56,7 @@ What **runs today** when you launch `editor-app.exe`:
 
 - Text editing (rope, undo/redo, word nav, multi-line selection, clipboard).
 - File I/O with encoding detection and atomic save.
+- Syntax highlighting for Rust / TOML / JSON / Markdown (auto-detected by path).
 - Status bar (cursor, encoding, line ending, git branch, external-modified marker).
 - Session persistence (last file, cursor, scroll, window geometry, sidebar state).
 - Multi-buffer tabs with MRU ordering; FS event flags external modifications.
@@ -67,7 +68,6 @@ What **runs today** when you launch `editor-app.exe`:
 
 What **does not** run today (but has scaffolding/libraries):
 
-- Syntax highlighting (M15 — no code at all).
 - `Ctrl+F` find bar (M16 — matcher exists, UI not wired).
 - Diff view / gutter marks (M17 — engine exists).
 - Git commit / push / pull UI (M18 — only branch name).
