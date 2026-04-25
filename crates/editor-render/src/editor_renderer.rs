@@ -60,6 +60,12 @@ pub struct FrameInput<'a> {
     /// Right inset (physical px) for panels on the right side (e.g. agent panel).
     /// Text and terminal rendering clip to `window_width - content_inset_right_px`.
     pub content_inset_right_px: f32,
+    /// When > 0, terminal content renders starting at this x position (physical px).
+    /// Set to the agent panel's left edge to keep the terminal inside the right panel.
+    pub terminal_left_px: f32,
+    /// When > 0, terminal content clips to this x position (physical px).
+    /// Set to the window width to let terminal fill the full right panel width.
+    pub terminal_right_px: f32,
     /// Source language for syntax highlighting (M15). [`editor_syntax::Language::Plain`]
     /// preserves the pre-highlight path (single attrs per line) with zero overhead.
     pub language: editor_syntax::Language,
@@ -198,6 +204,8 @@ impl EditorRenderer {
             input.content_inset_left_px,
             input.content_inset_top_px,
             input.content_inset_right_px,
+            input.terminal_left_px,
+            input.terminal_right_px,
             input.language,
         )?;
         let prepare = t_prep.elapsed();

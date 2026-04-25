@@ -57,6 +57,8 @@ fn paint_resize_frame(
         content_inset_left_px: 0.0,
         content_inset_top_px: 0.0,
         content_inset_right_px: 0.0,
+        terminal_left_px: 0.0,
+        terminal_right_px: 0.0,
         language: editor_render::editor_syntax::Language::Plain,
     };
     renderer.render_frame(&input).expect("render_frame");

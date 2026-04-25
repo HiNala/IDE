@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use editor_chat::{ChatRole, Conversation, EngineEvent};
-use editor_ui::{AgentSessionStatus, ChatDisplayMsg, ChatDisplayRole};
+use editor_ui::AgentSessionStatus;
 use winit::event::KeyEvent;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
@@ -34,7 +34,6 @@ impl App {
                     if let Some(conv) = self.chat_conversations.get_mut(&session_id) {
                         conv.append_text(message_id, &delta);
                     }
-                    self.agent_panel.chat_scroll_offset = f32::MAX;
                 }
 
                 EngineEvent::Done { session_id, message_id, stop_reason, tokens_out } => {
@@ -65,7 +64,6 @@ impl App {
                     if let Some(conv) = self.chat_conversations.get_mut(&session_id) {
                         conv.push_tool_note(format!("▶ {name}({preview})"));
                     }
-                    self.agent_panel.chat_scroll_offset = f32::MAX;
 
                     // Execute the tool synchronously on the main thread.
                     let workspace_root = self
@@ -95,7 +93,6 @@ impl App {
                         let prefix = if is_error { "✗" } else { "✔" };
                         conv.push_tool_note(format!("{prefix} {result_preview}"));
                     }
-                    self.agent_panel.chat_scroll_offset = f32::MAX;
 
                     // Send the result back to the engine (unblocks the streaming task).
                     let _ = result_tx.send((result_content, is_error));
@@ -129,7 +126,7 @@ impl App {
                  then restart — or open Settings (Ctrl+,) to configure a key.",
             );
             self.clear_chat_input();
-            self.agent_panel.chat_scroll_offset = f32::MAX;
+            self.agent_view_active = true;
             return;
         }
 
@@ -175,7 +172,7 @@ impl App {
         }
 
         self.clear_chat_input();
-        self.agent_panel.chat_scroll_offset = f32::MAX;
+        self.agent_view_active = true;
     }
 
     // ── Keyboard input for the textarea ─────────────────────────────────────
@@ -276,29 +273,54 @@ impl App {
         false
     }
 
-    // ── Display message conversion ───────────────────────────────────────────
+    // ── Center agent view ────────────────────────────────────────────────────
 
-    /// Build the display message list for the currently active session.
-    pub(crate) fn active_session_display_msgs(&self) -> Vec<ChatDisplayMsg> {
+    /// Format the active session's conversation as text lines for the center
+    /// "Agent" overlay view. Returns an empty vec when there is nothing to show.
+    pub(crate) fn format_center_agent_lines(&self) -> Vec<String> {
         let Some(session) = self.agent_panel.sessions.get(self.agent_panel.active_session) else {
             return Vec::new();
         };
+        let label = &session.label;
+        let mut lines = vec![
+            format!("  \u{25ce}  {label}"),
+            String::new(),
+        ];
         let Some(conv) = self.chat_conversations.get(&session.id) else {
-            return Vec::new();
+            lines.push("  No messages yet. Type in the right panel and press \u{2318}\u{21b5}.".to_string());
+            return lines;
         };
-        conv.messages()
-            .iter()
-            .map(|m| ChatDisplayMsg {
-                role: match m.role {
-                    editor_chat::ChatRole::User => ChatDisplayRole::User,
-                    editor_chat::ChatRole::Assistant => ChatDisplayRole::Assistant,
-                    editor_chat::ChatRole::Tool { .. } => ChatDisplayRole::Tool,
-                    editor_chat::ChatRole::Note => ChatDisplayRole::Note,
-                },
-                text: m.text.clone(),
-                is_streaming: m.is_streaming,
-            })
-            .collect()
+        if conv.is_empty() {
+            lines.push("  No messages yet. Type in the right panel and press \u{2318}\u{21b5}.".to_string());
+            return lines;
+        }
+        for msg in conv.messages() {
+            match msg.role {
+                ChatRole::User => {
+                    lines.push("  \u{2500}\u{2500} You \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string());
+                    for line in msg.text.lines() {
+                        lines.push(format!("  {line}"));
+                    }
+                }
+                ChatRole::Assistant => {
+                    lines.push("  \u{2500}\u{2500} Claude \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string());
+                    for line in msg.text.lines() {
+                        lines.push(format!("  {line}"));
+                    }
+                    if msg.is_streaming {
+                        lines.push("  \u{258f}".to_string());
+                    }
+                }
+                ChatRole::Tool { .. } => {
+                    lines.push(format!("  {}", msg.text));
+                }
+                ChatRole::Note => {
+                    lines.push(format!("  \u{2015} {}", msg.text));
+                }
+            }
+            lines.push(String::new());
+        }
+        lines
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

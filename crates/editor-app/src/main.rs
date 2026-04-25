@@ -478,6 +478,8 @@ fn run_windowed(
         chat_input: String::new(),
         chat_input_cursor: 0,
         agent_panel_focused: false,
+        agent_view_active: false,
+        settings_api_key_buf: String::new(),
     };
     app.clamp_cursor_to_buffer();
     app.seed_initial_buffer_into_manager();
@@ -609,6 +611,10 @@ struct App {
     chat_input_cursor: usize,
     /// Whether keyboard focus is in the agent panel textarea.
     agent_panel_focused: bool,
+    /// When true the center area shows the active agent session's conversation.
+    agent_view_active: bool,
+    /// API key being typed in the settings overlay (cleared on close).
+    settings_api_key_buf: String,
 }
 
 /// The prefix half of a two-key chord. Currently only `Ctrl+K` is used.
@@ -2152,13 +2158,34 @@ impl App {
             if let Some(hit) = tab_hit {
                 if hit.is_close {
                     self.agent_panel.remove_session(hit.session_idx);
+                    // If we removed the last session deactivate the center view.
+                    if self.agent_panel.sessions.is_empty() {
+                        self.agent_view_active = false;
+                    }
                 } else {
                     self.agent_panel.active_session = hit.session_idx;
-                    self.agent_panel.chat_scroll_offset = f32::MAX;
+                    // Clicking a session tab opens conversation in center.
+                    self.agent_view_active = true;
                 }
                 self.agent_panel_focused = false;
                 self.request_redraw();
                 return;
+            }
+            // "+ New session" button.
+            if let Some([bx0, by0, bx1, by1]) = self.agent_panel_hits.new_session_btn {
+                if xf >= bx0 && xf <= bx1 && yf >= by0 && yf <= by1 {
+                    let id = self.agent_panel.add_session(
+                        format!("Chat {}", self.agent_panel.sessions.len()),
+                        editor_ui::AgentSessionStatus::Queued,
+                    );
+                    self.chat_conversations
+                        .entry(id)
+                        .or_insert_with(editor_chat::Conversation::new);
+                    self.agent_panel.active_session = self.agent_panel.sessions.len() - 1;
+                    self.agent_view_active = true;
+                    self.request_redraw();
+                    return;
+                }
             }
             // Click elsewhere in panel — defocus textarea
             self.agent_panel_focused = false;
@@ -2194,6 +2221,8 @@ impl App {
         self.terminal_focus = false;
         self.sidebar.focused = false;
         self.agent_panel_focused = false;
+        // Click in editor area closes the center agent view and returns to code.
+        self.agent_view_active = false;
         let Some(byte) = self.hit_test_byte(x, y) else {
             return;
         };
@@ -2556,6 +2585,15 @@ impl App {
         self.tab_hits = tab_hits;
         let inset_right_px = self.agent_panel_width_px();
 
+        // Pre-build agent view lines so the borrow below is clean.
+        let agent_view_lines_storage: Option<Vec<String>> =
+            if self.agent_view_active && self.settings_overlay_lines.is_none() {
+                let lines = self.format_center_agent_lines();
+                if lines.is_empty() { None } else { Some(lines) }
+            } else {
+                None
+            };
+
         if let (Some(renderer), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) {
             let snap = self.buffer.snapshot();
             let physical = w.inner_size();
@@ -2584,11 +2622,33 @@ impl App {
                     0.0
                 },
                 terminal_snapshot: term_snap_owned,
-                settings_overlay_lines: self.settings_overlay_lines.as_deref(),
+                settings_overlay_lines: {
+                    // Priority: settings overlay > agent view > none.
+                    if self.settings_overlay_lines.is_some() {
+                        self.settings_overlay_lines.as_deref()
+                    } else if self.agent_view_active {
+                        // Build lazily; stored below.
+                        agent_view_lines_storage.as_deref()
+                    } else {
+                        None
+                    }
+                },
                 frame_chrome: chrome_opt.as_ref(),
                 content_inset_left_px: inset_left_px,
                 content_inset_top_px: inset_top_px,
                 content_inset_right_px: inset_right_px,
+                // Route terminal content into the right panel (v3 layout).
+                // terminal_left_px = left edge of agent panel; terminal_right_px = window right.
+                terminal_left_px: if self.agent_panel.visible && terminal_pane_height_px > 0.5 {
+                    physical.width as f32 - inset_right_px
+                } else {
+                    0.0
+                },
+                terminal_right_px: if self.agent_panel.visible && terminal_pane_height_px > 0.5 {
+                    physical.width as f32
+                } else {
+                    0.0
+                },
                 language: self
                     .open_path
                     .as_deref()
@@ -2721,7 +2781,6 @@ impl App {
         {
             let panel_left = physical.width as f32 - agent_w;
             let panel_h = (physical.height as f32 - status_h).max(1.0);
-            let msgs = self.active_session_display_msgs();
             self.agent_panel_hits = self.agent_panel.paint(
                 &mut chrome,
                 scale,
@@ -2729,7 +2788,6 @@ impl App {
                 0.0,
                 panel_h,
                 self.terminal_pane_visible,
-                &msgs,
                 &self.chat_input.clone(),
                 self.chat_input_cursor,
                 self.agent_panel_focused,
@@ -2928,6 +2986,83 @@ impl App {
                 [0xdc, 0xdc, 0xdc],
             );
         }
+    }
+
+    /// Handle a key event when the settings overlay is open.
+    /// Returns true if the event was consumed (no further routing needed).
+    fn handle_settings_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let PhysicalKey::Code(code) = event.physical_key else { return false; };
+        let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
+        match code {
+            KeyCode::Enter => {
+                let key = self.settings_api_key_buf.trim().to_string();
+                if !key.is_empty() {
+                    let store = editor_ai_provider::SecretStore::new();
+                    if let Err(e) = store.set_key("anthropic", &key) {
+                        tracing::warn!("keyring write failed: {e}");
+                    } else {
+                        tracing::info!("Anthropic API key saved to keychain");
+                        // Rebuild the provider registry with the new key.
+                        if let Ok(cfg) = editor_ai_provider::load_or_create_default(None) {
+                            match editor_ai_provider::ProviderRegistry::from_config(&cfg, &store) {
+                                Ok(reg) => {
+                                    self.chat_engine.set_registry(reg);
+                                    tracing::info!("AI provider registry refreshed");
+                                }
+                                Err(e) => tracing::warn!("registry rebuild: {e}"),
+                            }
+                        }
+                        self.settings_api_key_buf.clear();
+                        self.settings_overlay_lines = Some(self.build_settings_lines());
+                    }
+                }
+                true
+            }
+            KeyCode::Backspace if !ctrl => {
+                self.settings_api_key_buf.pop();
+                self.settings_overlay_lines = Some(self.build_settings_lines());
+                true
+            }
+            _ => {
+                if !ctrl {
+                    if let Some(t) = &event.text {
+                        if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
+                            self.settings_api_key_buf.push_str(t);
+                            self.settings_overlay_lines = Some(self.build_settings_lines());
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// Build the settings overlay lines, including the live API key input field.
+    fn build_settings_lines(&self) -> Vec<String> {
+        let has_provider = self.chat_engine.has_provider();
+        let key_display = if self.settings_api_key_buf.is_empty() {
+            if has_provider { "  (key configured)" } else { "  (no key — type below)" }.to_string()
+        } else {
+            let masked: String = self.settings_api_key_buf
+                .chars()
+                .enumerate()
+                .map(|(i, c)| if i < 7 { c } else { '\u{2022}' })
+                .collect();
+            format!("  \u{25b8} {masked}")
+        };
+
+        let mut lines = vec![
+            "  \u{2699}  Settings".to_string(),
+            String::new(),
+            "  \u{2500} Anthropic API Key \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
+            key_display,
+            "  Type key then press Enter to save \u{b7} Esc to close".to_string(),
+            String::new(),
+        ];
+        lines.extend(format_settings_overlay(&self.settings_store));
+        lines
     }
 
     fn sync_window_title(&self) {
@@ -3220,7 +3355,8 @@ impl App {
                 false
             }
             EditorCommand::OpenSettings => {
-                self.settings_overlay_lines = Some(format_settings_overlay(&self.settings_store));
+                self.settings_api_key_buf.clear();
+                self.settings_overlay_lines = Some(self.build_settings_lines());
                 self.request_redraw();
                 false
             }
@@ -3249,6 +3385,7 @@ impl App {
                     return false;
                 }
                 if self.settings_overlay_lines.take().is_some() {
+                    self.settings_api_key_buf.clear();
                     self.request_redraw();
                 }
                 false
@@ -3624,15 +3761,14 @@ impl ApplicationHandler<AppEvent> for App {
                 if dy == 0.0 {
                     return;
                 }
-                // Route scroll to agent panel when pointer is over it.
+                // Scroll over the agent panel — no history in panel so just skip.
                 let panel_left = self
                     .window
                     .as_ref()
                     .map(|w| w.inner_size().width as f32 - self.agent_panel_width_px())
                     .unwrap_or(f32::MAX);
                 if self.agent_panel.visible && self.last_pointer.x as f32 >= panel_left {
-                    self.agent_panel.scroll_chat(-dy / self.scale_factor);
-                    self.request_redraw();
+                    // Agent panel is input-only; no history scrolling needed here.
                     return;
                 }
                 if self.terminal_focus
@@ -3732,6 +3868,10 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 if self.command_palette.visible && self.handle_command_palette_key(&event) {
+                    self.request_redraw();
+                    return;
+                }
+                if self.settings_overlay_lines.is_some() && self.handle_settings_key(&event) {
                     self.request_redraw();
                     return;
                 }

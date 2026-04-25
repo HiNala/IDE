@@ -133,6 +133,7 @@ fn push_dev_hud_text_area<'a>(
 
 /// Append integrated-terminal [`TextArea`]s; `bufs` must match `snapshot` run count.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn push_terminal_text_areas<'a>(
     areas: &mut Vec<TextArea<'a>>,
     bufs: &'a [Buffer],
@@ -145,6 +146,8 @@ fn push_terminal_text_areas<'a>(
     line_h: f32,
     content_inset_left_px: f32,
     content_inset_right_px: f32,
+    terminal_left_px: f32,
+    terminal_right_px: f32,
 ) {
     if terminal_pane_height_px <= 0.5 || snapshot.rows.is_empty() {
         return;
@@ -152,11 +155,26 @@ fn push_terminal_text_areas<'a>(
     let run_count: usize = snapshot.rows.iter().map(|r| r.runs.len()).sum();
     debug_assert_eq!(run_count, bufs.len(), "terminal buffers must match snapshot runs");
     let (gutter_w, char_w) = compute_gutter_width_px(snapshot.rows.len().max(1), scale_factor);
-    let body_left = content_inset_left_px + 8.0 + gutter_w;
+
+    // When terminal_left_px > 0 the terminal renders inside a right panel (v3 layout).
+    // Otherwise fall back to the classic full-width bottom strip.
+    let (body_left, clip_left, clip_right) = if terminal_left_px > 0.0 {
+        let left = terminal_left_px + 14.0; // 14 px padding inside panel
+        let right = if terminal_right_px > 0.0 {
+            terminal_right_px.round() as i32
+        } else {
+            physical_size.width as i32
+        };
+        (left, terminal_left_px.round() as i32, right)
+    } else {
+        let left = content_inset_left_px + 8.0 + gutter_w;
+        let right = (physical_size.width as f32 - content_inset_right_px).max(0.0).round() as i32;
+        (left, 0, right)
+    };
+
     let term_top = physical_size.height as f32 - status_h - terminal_pane_height_px
         + terminal_header_height_px
         + 4.0;
-    let clip_right = (physical_size.width as f32 - content_inset_right_px).max(0.0).round() as i32;
     let h = physical_size.height as i32;
     let term_clip_top = term_top.round().max(0.0) as i32;
     let mut idx = 0usize;
@@ -171,7 +189,12 @@ fn push_terminal_text_areas<'a>(
                 left: x,
                 top,
                 scale: 1.0,
-                bounds: TextBounds { left: 0, top: term_clip_top, right: clip_right, bottom: h },
+                bounds: TextBounds {
+                    left: clip_left,
+                    top: term_clip_top,
+                    right: clip_right,
+                    bottom: h,
+                },
                 default_color: Color::rgb(0xe0, 0xe0, 0xe0),
                 custom_glyphs: &[],
             });
@@ -546,6 +569,8 @@ impl TextLayer {
         content_inset_left_px: f32,
         content_inset_top_px: f32,
         content_inset_right_px: f32,
+        terminal_left_px: f32,
+        terminal_right_px: f32,
         language: Language,
     ) -> Result<(), RenderError> {
         if let Some(lines) = settings_overlay {
@@ -663,6 +688,8 @@ impl TextLayer {
                 line_h,
                 content_inset_left_px,
                 content_inset_right_px,
+                terminal_left_px,
+                terminal_right_px,
             );
         }
 
@@ -767,6 +794,8 @@ impl TextLayer {
                         line_h,
                         content_inset_left_px,
                         content_inset_right_px,
+                        terminal_left_px,
+                        terminal_right_px,
                     );
                 }
                 push_frame_chrome_text_areas(
