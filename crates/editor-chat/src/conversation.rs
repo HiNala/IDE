@@ -17,10 +17,10 @@ impl fmt::Display for MessageId {
 pub enum ChatRole {
     User,
     Assistant,
-    /// Tool call result from a named tool.
-    Tool {
-        call_id: u64,
-    },
+    /// Tool invocation (call request + result) displayed inline in the chat log.
+    Tool { call_id: u64 },
+    /// Non-fatal inline note (e.g. "no provider configured").
+    Note,
 }
 
 /// A single turn in the conversation.
@@ -119,6 +119,34 @@ impl Conversation {
     pub fn last_n(&self, n: usize) -> &[ChatMessage] {
         let start = self.messages.len().saturating_sub(n);
         &self.messages[start..]
+    }
+
+    /// Push a completed tool-call line (call name + abbreviated args).
+    pub fn push_tool_note(&mut self, text: impl Into<String>) -> MessageId {
+        let id = self.alloc_id();
+        self.messages.push(ChatMessage {
+            id,
+            role: ChatRole::Tool { call_id: id.0 },
+            text: text.into(),
+            is_streaming: false,
+            stop_reason: None,
+            tokens_out: 0,
+        });
+        id
+    }
+
+    /// Push a short inline note (warning / error surface to the user).
+    pub fn push_note(&mut self, text: impl Into<String>) -> MessageId {
+        let id = self.alloc_id();
+        self.messages.push(ChatMessage {
+            id,
+            role: ChatRole::Note,
+            text: text.into(),
+            is_streaming: false,
+            stop_reason: None,
+            tokens_out: 0,
+        });
+        id
     }
 
     /// Total messages.

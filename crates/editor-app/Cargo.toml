@@ -35,6 +35,7 @@ editor-index        = { path = "../editor-index" }
 editor-git          = { path = "../editor-git" }
 editor-search       = { path = "../editor-search" }
 editor-ai-provider  = { path = "../editor-ai-provider" }
+editor-ai-tools     = { path = "../editor-ai-tools" }
 editor-chat         = { path = "../editor-chat" }
 
 directories        = { workspace = true }

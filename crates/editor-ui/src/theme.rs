@@ -25,8 +25,6 @@ pub const fn rgba_u8(r: u8, g: u8, b: u8, a: u8) -> [f32; 4] {
 /// Design: obsidian dark + soft violet (`#9580ff`).
 /// Surfaces: s0=#07070b (deepest) → s1=#0c0c12 → s2=#090910 → s3=#101018 → s4=#14141e
 pub mod palette {
-    use super::rgba_u8;
-
     // === Editor surface ===
     /// Main editor background — obsidian (#090910).
     pub const EDITOR_BG: [f32; 4] = rgba_u8(0x09, 0x09, 0x10, 0xff);
@@ -129,10 +127,23 @@ pub mod palette {
     pub const AGENT_INPUT_BG: [f32; 4] = rgba_u8(0x10, 0x10, 0x18, 0xff);
     /// Agent panel border (#ffffff0f).
     pub const AGENT_BORDER: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x0f);
-    /// Agent panel header text (#3a3a52).
+    /// Agent panel header / dim text (#3a3a52).
     pub const AGENT_HEADER_FG: [u8; 3] = [0x3a, 0x3a, 0x52];
     /// Agent send button background (violet accent).
     pub const AGENT_SEND_BG: [f32; 4] = rgba_u8(0x95, 0x80, 0xff, 0xff);
+    /// Queued session dot (#3a3a52).
+    pub const AGENT_QUEUED_DOT: [f32; 4] = rgba_u8(0x3a, 0x3a, 0x52, 0xff);
+
+    // === Diff background ===
+    /// Tool-message / diff subtle tint (#0e0e18).
+    pub const DIFF_BG: [f32; 4] = rgba_u8(0x0e, 0x0e, 0x18, 0xff);
+
+    // === Accent body text ===
+    /// Bright violet readable on dark bg — assistant label (#c4b4ff).
+    pub const ACCENT_BLUE_TEXT: [u8; 3] = [0xc4, 0xb4, 0xff];
+
+    /// Re-export so callers can build one-off colours without a separate import.
+    pub use super::rgba_u8;
 }
 
 /// Logical pixel spacing used by multiple chrome modules.

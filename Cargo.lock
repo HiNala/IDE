@@ -1093,6 +1093,7 @@ dependencies = [
  "crossbeam-channel",
  "directories",
  "editor-ai-provider",
+ "editor-ai-tools",
  "editor-chat",
  "editor-core",
  "editor-git",

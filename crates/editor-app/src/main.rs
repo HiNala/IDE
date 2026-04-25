@@ -9,6 +9,7 @@
 // CLI help and parse errors are intentionally written to stderr (user-facing).
 #![allow(clippy::print_stderr)]
 
+mod chat;
 mod config;
 mod metrics;
 mod perf_smoke;
@@ -448,10 +449,11 @@ fn run_windowed(
         },
         agent_panel: AgentPanel::new(),
         agent_panel_dragging: false,
-        agent_tab_hits: Vec::new(),
+        agent_panel_hits: editor_ui::AgentPanelHits::default(),
         quick_open: QuickOpenPalette::new(),
         command_palette: CommandPalette::new(),
         tab_hits: Vec::new(),
+        breadcrumb_hits: Vec::new(),
         find_bar: FindBar::default(),
         git_branch: None,
         git_last_refresh: Instant::now() - Duration::from_secs(10),
@@ -474,9 +476,16 @@ fn run_windowed(
         },
         chat_conversations: std::collections::HashMap::new(),
         chat_input: String::new(),
+        chat_input_cursor: 0,
+        agent_panel_focused: false,
     };
     app.clamp_cursor_to_buffer();
     app.seed_initial_buffer_into_manager();
+    // Seed the initial session's conversation so the panel renders immediately.
+    if let Some(s) = app.agent_panel.sessions.first() {
+        let id = s.id;
+        app.chat_conversations.entry(id).or_insert_with(editor_chat::Conversation::new);
+    }
     if let Some(ws_root) = workspace_hint {
         app.open_workspace_folder(&ws_root);
     }
@@ -555,13 +564,16 @@ struct App {
     agent_panel: AgentPanel,
     /// True while the user is dragging the agent panel's left resize edge.
     agent_panel_dragging: bool,
-    /// Session tab hit regions from the last painted agent panel frame.
-    agent_tab_hits: Vec<editor_ui::AgentTabHit>,
+    /// Hit regions from the last painted agent panel frame.
+    agent_panel_hits: editor_ui::AgentPanelHits,
     quick_open: QuickOpenPalette,
     /// Ctrl+Shift+P command palette (every `EditorCommand` discoverable).
     command_palette: CommandPalette,
     /// Tab hit boxes from the last frame's `paint_tab_strip` — used by mouse routing.
     tab_hits: Vec<TabHit>,
+    /// Breadcrumb hit regions (one per visible segment) captured from the
+    /// last `paint_breadcrumbs` call. Drives click-to-navigate (M14).
+    breadcrumb_hits: Vec<editor_ui::BreadcrumbHit>,
     // --- M16 in-buffer find / replace -----------------------------------------------
     /// Active find / replace overlay (M16). Hidden by default.
     find_bar: FindBar,
@@ -586,19 +598,17 @@ struct App {
     /// a known chord or the prefix is dropped. Timeout: [`CHORD_TIMEOUT`].
     pending_chord_prefix: Option<(ChordPrefix, Instant)>,
     // --- M19/M23 AI chat engine -------------------------------------------------------
-    // Scaffolding: stored today, read once the agent-panel event loop lands in M23.
-    // The fields are held so the registry / conversation state survive the lifetime
-    // of the window and don't have to be re-initialised per frame.
     /// Async AI streaming engine; spawns tokio tasks and posts [`editor_chat::EngineEvent`]
     /// back to the winit thread via a crossbeam channel.
-    #[allow(dead_code)]
     chat_engine: editor_chat::ChatEngine,
     /// Per-session conversation history — indexed by [`AgentPanel::sessions`] id.
-    #[allow(dead_code)]
     chat_conversations: std::collections::HashMap<u64, editor_chat::Conversation>,
     /// Text the user is currently typing in the agent panel input area.
-    #[allow(dead_code)]
     chat_input: String,
+    /// Byte cursor position within `chat_input`.
+    chat_input_cursor: usize,
+    /// Whether keyboard focus is in the agent panel textarea.
+    agent_panel_focused: bool,
 }
 
 /// The prefix half of a two-key chord. Currently only `Ctrl+K` is used.
@@ -606,6 +616,18 @@ struct App {
 enum ChordPrefix {
     /// `Ctrl+K` — VS Code's workbench-prefix gate.
     CtrlK,
+}
+
+/// Outcome of the Save / Discard / Cancel dialog shown when the user tries to
+/// close a dirty buffer. Returned by [`App::confirm_close_dirty_buffer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirtyCloseChoice {
+    /// Save the buffer to disk, then close.
+    Save,
+    /// Drop the unsaved changes and close.
+    Discard,
+    /// Keep the buffer open with its edits intact.
+    Cancel,
 }
 
 /// How long a parked chord prefix is held before being forgotten. Matches
@@ -961,6 +983,47 @@ impl App {
             return;
         };
         self.sidebar.reveal_path(rel);
+    }
+
+    /// Navigate the sidebar to the workspace-relative path clicked in the
+    /// breadcrumb strip.
+    ///
+    /// Behaviour (M14):
+    /// - For **directory** segments: expand ancestors + the directory itself,
+    ///   highlight the row, and hand focus to the sidebar so keyboard nav
+    ///   (`Up/Down`, `Enter`) continues from there.
+    /// - For the **file** segment (last crumb): expand ancestors, highlight
+    ///   the file, and focus the sidebar; the buffer is already active so no
+    ///   additional open is needed.
+    ///
+    /// No-op when there's no open workspace (nothing to reveal against).
+    fn navigate_to_breadcrumb(&mut self, rel: &Path) {
+        let Some(root) = self.workspace_root().map(Path::to_path_buf) else {
+            return;
+        };
+        // Expand ancestors first so the target row can even appear.
+        self.sidebar.reveal_path(rel);
+
+        // If the clicked crumb is a directory, expand it so its children are
+        // visible. Directories are detected via filesystem metadata (cheaper
+        // than searching `workspace_entries`).
+        let abs = root.join(rel);
+        if abs.is_dir() {
+            self.sidebar.expanded_dirs.insert(rel.to_path_buf());
+        }
+
+        // Rebuild the flattened row list so the expansion takes effect this
+        // frame — `reveal_path` mutates state but doesn't rebuild.
+        self.sidebar.rebuild_flat(&self.workspace_entries);
+
+        if self.sidebar.flat_rows().iter().any(|r| r.rel == rel) {
+            self.sidebar.highlighted = Some(rel.to_path_buf());
+        }
+        if !self.sidebar.visible {
+            self.sidebar.visible = true;
+        }
+        self.sidebar.focused = true;
+        self.terminal_focus = false;
     }
 
     /// Open (or switch to) `path` as a new tab; mirrors state into the App's active slot.
@@ -2037,6 +2100,72 @@ impl App {
             return;
         }
 
+        // Breadcrumb strip clicks — under the tab strip, above the editor.
+        // Navigate to the clicked ancestor in the sidebar (reveal + focus).
+        let bc_top = self.tabstrip_height_px() as f64;
+        let bc_bottom = bc_top + self.breadcrumbs_height_px() as f64;
+        if bc_top < bc_bottom && y >= bc_top && y < bc_bottom && !self.breadcrumb_hits.is_empty() {
+            let xf = x as f32;
+            if let Some(hit) =
+                self.breadcrumb_hits.iter().find(|h| xf >= h.x0 && xf <= h.x1).cloned()
+            {
+                self.navigate_to_breadcrumb(&hit.full_path);
+            }
+            self.request_redraw();
+            return;
+        }
+
+        // Agent panel clicks (right-side column).
+        let panel_left = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size().width as f32 - self.agent_panel_width_px())
+            .unwrap_or(f32::MAX);
+        if self.agent_panel.visible && x as f32 >= panel_left {
+            let xf = x as f32;
+            let yf = y as f32;
+            // Send button
+            if let Some([bx0, by0, bx1, by1]) = self.agent_panel_hits.send_button {
+                if xf >= bx0 && xf <= bx1 && yf >= by0 && yf <= by1 {
+                    self.submit_chat_input();
+                    self.request_redraw();
+                    return;
+                }
+            }
+            // Input textarea — give it focus
+            if let Some([ax0, ay0, ax1, ay1]) = self.agent_panel_hits.input_area {
+                if xf >= ax0 && xf <= ax1 && yf >= ay0 && yf <= ay1 {
+                    self.agent_panel_focused = true;
+                    self.sidebar.focused = false;
+                    self.terminal_focus = false;
+                    self.request_redraw();
+                    return;
+                }
+            }
+            // Session tabs
+            let tab_hit = self
+                .agent_panel_hits
+                .tab_hits
+                .iter()
+                .find(|h| xf >= h.x0 && xf <= h.x1 && yf >= h.y0 && yf <= h.y1)
+                .cloned();
+            if let Some(hit) = tab_hit {
+                if hit.is_close {
+                    self.agent_panel.remove_session(hit.session_idx);
+                } else {
+                    self.agent_panel.active_session = hit.session_idx;
+                    self.agent_panel.chat_scroll_offset = f32::MAX;
+                }
+                self.agent_panel_focused = false;
+                self.request_redraw();
+                return;
+            }
+            // Click elsewhere in panel — defocus textarea
+            self.agent_panel_focused = false;
+            self.request_redraw();
+            return;
+        }
+
         // Terminal pane header: close button + header-wide focus swallow.
         // Checked before PTY focus so the strip feels like chrome, not content.
         if self.terminal_pane_visible {
@@ -2064,6 +2193,7 @@ impl App {
         }
         self.terminal_focus = false;
         self.sidebar.focused = false;
+        self.agent_panel_focused = false;
         let Some(byte) = self.hit_test_byte(x, y) else {
             return;
         };
@@ -2169,6 +2299,9 @@ impl App {
         if let Err(e) = self.settings_store.flush_pending_save() {
             warn!(error = %e, "settings: debounced save failed");
         }
+        if self.poll_chat_events() {
+            self.request_redraw();
+        }
     }
 
     fn apply_loaded(&mut self, l: LoadedFile) {
@@ -2267,6 +2400,82 @@ impl App {
         let enc = self.disk_encoding;
         let (_, rx) = self.worker_pool.spawn(move |_t| save_file_sync(&path, &snap, le, enc));
         self.save_rx = Some(rx);
+    }
+
+    /// Synchronous save path used by the dirty-close dialog.
+    ///
+    /// Unlike [`Self::save_via_dialog_or_disk`] this blocks the UI until the
+    /// write completes — acceptable because the surrounding modal (Save /
+    /// Discard / Cancel) already blocked input. Returns `true` on success so
+    /// the caller can proceed to close the buffer; `false` means the user
+    /// cancelled a Save-As prompt, the write failed, or an external-modify
+    /// confirmation was declined.
+    fn save_blocking_best_effort(&mut self) -> bool {
+        // If there's an in-flight async save, let it finish before starting a
+        // blocking one — otherwise we'd race two writers on the same path.
+        if self.save_rx.is_some() {
+            return false;
+        }
+        let path = if let Some(ref p) = self.open_path {
+            p.clone()
+        } else if let Some(p) = rfd::FileDialog::new().save_file() {
+            self.open_path = Some(p.clone());
+            p
+        } else {
+            return false;
+        };
+        if self.external_modified && !self.confirm_save_if_externally_modified() {
+            return false;
+        }
+        let snap = self.buffer.snapshot();
+        let le = self.buffer.original_line_ending();
+        let enc = self.disk_encoding;
+        match save_file_sync(&path, &snap, le, enc) {
+            Ok(()) => {
+                self.dirty = false;
+                if let Ok(m) = std::fs::metadata(&path).and_then(|x| x.modified()) {
+                    self.file_mtime = Some(m);
+                }
+                self.external_modified = false;
+                self.sync_window_title();
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "blocking save failed; not closing");
+                false
+            }
+        }
+    }
+
+    /// Ask the user what to do with unsaved changes before closing the active
+    /// buffer. Returns [`DirtyCloseChoice`] reflecting the button pressed
+    /// (closing the dialog via the system X is treated as `Cancel`).
+    fn confirm_close_dirty_buffer(&self) -> DirtyCloseChoice {
+        let name = self
+            .open_path
+            .as_ref()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "(untitled)".to_string());
+        let mut dlg = MessageDialog::new()
+            .set_level(MessageLevel::Warning)
+            .set_title("Unsaved changes")
+            .set_description(format!(
+                "{name} has unsaved changes.\n\n\
+                 • Yes — save, then close\n\
+                 • No — discard changes and close\n\
+                 • Cancel — keep the buffer open"
+            ))
+            .set_buttons(MessageButtons::YesNoCancel);
+        if let Some(w) = self.window.as_ref() {
+            dlg = dlg.set_parent(w.as_ref());
+        }
+        match dlg.show() {
+            MessageDialogResult::Yes => DirtyCloseChoice::Save,
+            MessageDialogResult::No => DirtyCloseChoice::Discard,
+            MessageDialogResult::Cancel
+            | MessageDialogResult::Ok
+            | MessageDialogResult::Custom(_) => DirtyCloseChoice::Cancel,
+        }
     }
 
     /// Writes `state.json` (cursor, scroll, window geometry, last file) for next launch (M10).
@@ -2496,7 +2705,7 @@ impl App {
         if breadcrumbs_on {
             let strip_w = (physical.width as f32 - inset_left_px - agent_w).max(0.0);
             let rel = self.active_path_rel();
-            let _ = editor_ui::paint_breadcrumbs(
+            self.breadcrumb_hits = editor_ui::paint_breadcrumbs(
                 &mut chrome,
                 scale,
                 inset_left_px,
@@ -2504,19 +2713,27 @@ impl App {
                 strip_w,
                 rel.as_deref(),
             );
+        } else {
+            self.breadcrumb_hits.clear();
         }
 
         // Agent panel: right side, full column height.
         {
             let panel_left = physical.width as f32 - agent_w;
             let panel_h = (physical.height as f32 - status_h).max(1.0);
-            self.agent_tab_hits = self.agent_panel.paint(
+            let msgs = self.active_session_display_msgs();
+            self.agent_panel_hits = self.agent_panel.paint(
                 &mut chrome,
                 scale,
                 panel_left,
                 0.0,
                 panel_h,
                 self.terminal_pane_visible,
+                &msgs,
+                &self.chat_input.clone(),
+                self.chat_input_cursor,
+                self.agent_panel_focused,
+                self.blink_on,
             );
         }
 
@@ -3124,11 +3341,31 @@ impl App {
                 let Some(id) = self.active_buffer_id else {
                     return false;
                 };
-                if self.dirty {
-                    warn!("close buffer: refusing to close dirty buffer without save (press Ctrl+S first)");
-                    return false;
-                }
-                if self.buffers.close(id, false).is_ok() {
+                // Dirty-guard (M14): if the active buffer has unsaved edits,
+                // ask the user whether to Save, Discard, or Cancel. `force`
+                // is raised only on Discard so `BufferManager::close` will
+                // drop a dirty buffer; the Save branch writes synchronously
+                // and then closes cleanly with `force=false`.
+                let force = if self.dirty {
+                    match self.confirm_close_dirty_buffer() {
+                        DirtyCloseChoice::Save => {
+                            if !self.save_blocking_best_effort() {
+                                // Save was cancelled or failed — keep the
+                                // buffer open rather than lose data.
+                                return false;
+                            }
+                            // Mirror the now-clean state into the manager
+                            // slot so `close(id, false)` sees dirty=false.
+                            self.sync_active_to_manager_with_id(id);
+                            false
+                        }
+                        DirtyCloseChoice::Discard => true,
+                        DirtyCloseChoice::Cancel => return false,
+                    }
+                } else {
+                    false
+                };
+                if self.buffers.close(id, force).is_ok() {
                     self.active_buffer_id = None;
                     if let Some(next) = self.buffers.active() {
                         self.load_state_from_buffer(next);
@@ -3217,6 +3454,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.request_redraw();
             }
             AppEvent::TerminalPump => {
+                // Poll AI chat events every 50 ms so tool-call round-trips don't
+                // wait for the 530 ms blink tick.
+                if self.poll_chat_events() {
+                    self.request_redraw();
+                }
                 if self.terminal_pane_visible {
                     let mut dirty = false;
                     for t in self.terminals.iter_mut().flatten() {
@@ -3382,6 +3624,17 @@ impl ApplicationHandler<AppEvent> for App {
                 if dy == 0.0 {
                     return;
                 }
+                // Route scroll to agent panel when pointer is over it.
+                let panel_left = self
+                    .window
+                    .as_ref()
+                    .map(|w| w.inner_size().width as f32 - self.agent_panel_width_px())
+                    .unwrap_or(f32::MAX);
+                if self.agent_panel.visible && self.last_pointer.x as f32 >= panel_left {
+                    self.agent_panel.scroll_chat(-dy / self.scale_factor);
+                    self.request_redraw();
+                    return;
+                }
                 if self.terminal_focus
                     && self.terminal_pane_visible
                     && self.pointer_in_terminal_pane(self.last_pointer.y)
@@ -3479,6 +3732,10 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 if self.command_palette.visible && self.handle_command_palette_key(&event) {
+                    self.request_redraw();
+                    return;
+                }
+                if self.handle_agent_panel_key(&event) {
                     self.request_redraw();
                     return;
                 }

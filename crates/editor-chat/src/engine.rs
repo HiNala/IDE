@@ -5,8 +5,16 @@
 //! that calls the provider and sends [`EngineEvent`]s back via a
 //! `crossbeam_channel::Sender`. The caller polls the receiver after each
 //! winit event and redraws when events arrive.
+//!
+//! Tool execution loop:
+//!   - When the model requests a tool call, a `ToolCall` event is sent with
+//!     a `result_tx: oneshot::Sender<(String, bool)>`.
+//!   - The caller must execute the tool and send `(result_json, is_error)`.
+//!   - The engine then re-submits with the tool result and continues streaming.
+//!   - Up to [`MAX_TOOL_ROUNDS`] rounds per turn.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use futures::StreamExt;
@@ -14,21 +22,37 @@ use tracing::{debug, warn};
 
 use editor_ai_provider::{
     AiProvider, ChatEvent as ProviderChatEvent, ChatRequest, ContentBlock, Message,
-    ProviderRegistry,
+    ProviderRegistry, ToolDef,
 };
 
-use crate::conversation::MessageId;
+use crate::conversation::{ChatRole, MessageId};
 use crate::error::{ChatError, Result};
 
+/// Maximum tool-call rounds per conversation turn before the stream is aborted.
+const MAX_TOOL_ROUNDS: usize = 15;
+
 /// Events flowing from the background AI task to the UI thread.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum EngineEvent {
     /// A text delta arrived; append to the streaming message.
     TextDelta { session_id: u64, message_id: MessageId, delta: String },
-    /// The stream finished.
+    /// The stream finished cleanly.
     Done { session_id: u64, message_id: MessageId, stop_reason: Option<String>, tokens_out: u32 },
     /// An error terminated the stream.
     Error { session_id: u64, message_id: MessageId, message: String },
+    /// The model requested a tool call.
+    ///
+    /// The receiver **must** send `(result_content, is_error)` back via `result_tx`
+    /// to unblock the engine and continue the conversation.  If the channel is
+    /// dropped the engine reports an error for that session.
+    ToolCall {
+        session_id: u64,
+        call_id: String,
+        name: String,
+        input_json: String,
+        /// Channel for the tool result.  Send `(result_text, is_error)`.
+        result_tx: tokio::sync::oneshot::Sender<(String, bool)>,
+    },
 }
 
 /// Configuration for [`ChatEngine`].
@@ -40,17 +64,22 @@ pub struct ChatEngineConfig {
     pub max_tokens: u32,
     /// System prompt injected at every turn.
     pub system_prompt: String,
+    /// Tool schemas exposed to the model.  Empty = no tools.
+    pub tools: Vec<ToolDef>,
 }
 
 impl Default for ChatEngineConfig {
     fn default() -> Self {
         Self {
             default_model: "claude-opus-4-7".into(),
-            max_tokens: 4096,
+            max_tokens: 8192,
             system_prompt: "You are an expert coding assistant integrated into a GPU-rendered \
-                            Rust IDE. Be concise, correct, and reference exact file paths and \
-                            line numbers when discussing code."
+                            Rust IDE called Antigravity. You have access to file-system tools \
+                            to read, search, and edit code. Be concise and precise. Reference \
+                            exact file paths and line numbers. When editing files prefer \
+                            edit_lines over full rewrites."
                 .into(),
+            tools: default_tool_defs(),
         }
     }
 }
@@ -94,16 +123,20 @@ impl ChatEngine {
         self.registry.as_ref().map(|r| r.has_active()).unwrap_or(false)
     }
 
+    /// Replace the tool schemas exposed to the model (called on workspace open).
+    pub fn set_tools(&mut self, tools: Vec<ToolDef>) {
+        self.config.tools = tools;
+    }
+
     /// Borrow the event receiver; the caller drains it each frame.
     pub fn events(&self) -> &Receiver<EngineEvent> {
         &self.event_rx
     }
 
-    /// Submit a user prompt for streaming. Returns the assistant `MessageId` allocated
-    /// for this turn so the caller can track which message to update.
+    /// Submit a user prompt for streaming.
     ///
-    /// The engine will send [`EngineEvent`]s asynchronously; the caller should redraw
-    /// when events arrive.
+    /// The caller passes conversation history as `(role, text)` pairs excluding
+    /// the current user turn.  Tool / Note messages are skipped on the wire.
     pub fn submit(
         &self,
         session_id: u64,
@@ -118,93 +151,300 @@ impl ChatEngine {
         let config = self.config.clone();
         let tx = self.event_tx.clone();
 
+        // Build initial messages from history.
+        let mut messages: Vec<Message> = history
+            .into_iter()
+            .filter_map(|(role, text)| match role {
+                ChatRole::User => Some(Message::User { content: vec![ContentBlock::Text(text)] }),
+                ChatRole::Assistant => {
+                    Some(Message::Assistant { content: vec![ContentBlock::Text(text)] })
+                }
+                ChatRole::Tool { .. } | ChatRole::Note => None,
+            })
+            .collect();
+        messages.push(Message::User { content: vec![ContentBlock::Text(prompt)] });
+
         self.rt.spawn(async move {
-            run_stream(session_id, message_id, history, prompt, provider, config, tx).await;
+            run_stream(session_id, message_id, messages, provider, config, tx).await;
         });
         Ok(())
     }
 }
 
-/// Role for history reconstruction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChatRole {
-    User,
-    Assistant,
-}
-
 async fn run_stream(
     session_id: u64,
     message_id: MessageId,
-    history: Vec<(ChatRole, String)>,
-    prompt: String,
+    mut messages: Vec<Message>,
     provider: Arc<dyn AiProvider>,
     config: ChatEngineConfig,
     tx: Sender<EngineEvent>,
 ) {
-    // Build messages from history + current prompt.
-    let mut messages: Vec<Message> = history
-        .into_iter()
-        .map(|(role, text)| match role {
-            ChatRole::User => Message::User { content: vec![ContentBlock::Text(text)] },
-            ChatRole::Assistant => Message::Assistant { content: vec![ContentBlock::Text(text)] },
-        })
-        .collect();
-    messages.push(Message::User { content: vec![ContentBlock::Text(prompt)] });
+    let mut total_tokens_out = 0u32;
 
-    let request = ChatRequest {
-        model: config.default_model,
-        system: Some(config.system_prompt),
-        messages,
-        tools: vec![],
-        max_tokens: config.max_tokens,
-        temperature: None,
-        stop: vec![],
-        stream: true,
-    };
+    for _round in 0..MAX_TOOL_ROUNDS {
+        let request = ChatRequest {
+            model: config.default_model.clone(),
+            system: Some(config.system_prompt.clone()),
+            messages: messages.clone(),
+            tools: config.tools.clone(),
+            max_tokens: config.max_tokens,
+            temperature: None,
+            stop: vec![],
+            stream: true,
+        };
 
-    let stream = match provider.chat(request).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = tx.send(EngineEvent::Error { session_id, message_id, message: e.to_string() });
-            return;
-        }
-    };
-
-    let mut stream = Box::pin(stream);
-    let mut tokens_out = 0u32;
-    let mut stop_reason: Option<String> = None;
-
-    while let Some(item) = stream.next().await {
-        let event = match item {
-            Ok(e) => e,
+        let stream = match provider.chat(request).await {
+            Ok(s) => s,
             Err(e) => {
-                warn!(session_id, error = %e, "stream error");
-                let _ =
-                    tx.send(EngineEvent::Error { session_id, message_id, message: e.to_string() });
+                let _ = tx.send(EngineEvent::Error {
+                    session_id,
+                    message_id,
+                    message: e.to_string(),
+                });
                 return;
             }
         };
-        match event {
-            ProviderChatEvent::TextDelta(delta) => {
-                debug!(session_id, delta = %delta, "stream delta");
-                let _ = tx.send(EngineEvent::TextDelta { session_id, message_id, delta });
-            }
-            ProviderChatEvent::Done { usage, stop_reason: sr } => {
-                tokens_out = usage.output_tokens;
-                stop_reason = Some(format!("{:?}", sr));
-                break;
-            }
-            ProviderChatEvent::Error(e) => {
-                warn!(session_id, error = %e, "stream error");
-                let _ =
-                    tx.send(EngineEvent::Error { session_id, message_id, message: e.to_string() });
-                return;
-            }
-            ProviderChatEvent::ToolCall { .. } => {
-                // Tool calls are not yet executed — just skip for now.
+
+        let mut stream = Box::pin(stream);
+        let mut assistant_text = String::new();
+        // Collected tool calls for this streaming turn.
+        let mut tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
+        let mut stop_reason: Option<String> = None;
+
+        while let Some(item) = stream.next().await {
+            let event = match item {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(session_id, error = %e, "stream error");
+                    let _ = tx.send(EngineEvent::Error {
+                        session_id,
+                        message_id,
+                        message: e.to_string(),
+                    });
+                    return;
+                }
+            };
+            match event {
+                ProviderChatEvent::TextDelta(delta) => {
+                    debug!(session_id, len = delta.len(), "text delta");
+                    assistant_text.push_str(&delta);
+                    let _ =
+                        tx.send(EngineEvent::TextDelta { session_id, message_id, delta });
+                }
+                ProviderChatEvent::Done { usage, stop_reason: sr } => {
+                    total_tokens_out =
+                        total_tokens_out.saturating_add(usage.output_tokens);
+                    stop_reason = Some(format!("{sr:?}"));
+                    break;
+                }
+                ProviderChatEvent::Error(e) => {
+                    warn!(session_id, error = %e, "stream error event");
+                    let _ = tx.send(EngineEvent::Error {
+                        session_id,
+                        message_id,
+                        message: e.to_string(),
+                    });
+                    return;
+                }
+                ProviderChatEvent::ToolCall { id, name, input } => {
+                    tool_calls.push((id, name, input));
+                }
             }
         }
+
+        if tool_calls.is_empty() {
+            // Clean finish — no tools called this round.
+            let _ = tx.send(EngineEvent::Done {
+                session_id,
+                message_id,
+                stop_reason,
+                tokens_out: total_tokens_out,
+            });
+            return;
+        }
+
+        // Build the assistant message: accumulated text + tool_use blocks.
+        let mut assistant_content: Vec<ContentBlock> = Vec::new();
+        if !assistant_text.is_empty() {
+            assistant_content.push(ContentBlock::Text(assistant_text));
+        }
+        for (id, name, input) in &tool_calls {
+            assistant_content.push(ContentBlock::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            });
+        }
+        messages.push(Message::Assistant { content: assistant_content });
+
+        // Execute each tool: emit event, await result via oneshot channel.
+        for (call_id, name, input_val) in tool_calls {
+            let input_json = input_val.to_string();
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel::<(String, bool)>();
+            let _ = tx.send(EngineEvent::ToolCall {
+                session_id,
+                call_id: call_id.clone(),
+                name,
+                input_json,
+                result_tx,
+            });
+            let (content, is_error) = match tokio::time::timeout(
+                Duration::from_secs(60),
+                result_rx,
+            )
+            .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(_)) => ("Tool result channel closed.".to_string(), true),
+                Err(_) => {
+                    ("Tool execution timed out after 60 seconds.".to_string(), true)
+                }
+            };
+            messages.push(Message::ToolResult {
+                tool_call_id: call_id,
+                content,
+                is_error,
+            });
+        }
+        // Loop: next API call carries the tool results.
     }
 
-    let _ = tx.send(EngineEvent::Done { session_id, message_id, stop_reason, tokens_out });
+    // Exceeded MAX_TOOL_ROUNDS.
+    let _ = tx.send(EngineEvent::Error {
+        session_id,
+        message_id,
+        message: format!("Exceeded {MAX_TOOL_ROUNDS} tool-call rounds."),
+    });
+}
+
+// ── Built-in tool schemas ──────────────────────────────────────────────────────
+
+/// Returns the default set of tool schemas that the engine exposes to the model.
+fn default_tool_defs() -> Vec<ToolDef> {
+    use serde_json::json;
+    vec![
+        ToolDef {
+            name: "read_file".into(),
+            description: "Read the complete text contents of a file.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string", "description": "Workspace-relative or absolute path." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "list_directory".into(),
+            description: "List the direct children of a directory (files and sub-directories).".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string", "description": "Directory path (workspace-relative)." },
+                    "recursive": { "type": "boolean", "description": "If true, walk all sub-directories." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "find_files".into(),
+            description: "Find files matching a glob pattern under a directory.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["pattern"],
+                "properties": {
+                    "pattern": { "type": "string", "description": "Glob pattern, e.g. '**/*.rs'." },
+                    "path": { "type": "string", "description": "Search root (default: workspace root)." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "grep".into(),
+            description: "Search for a regex pattern across files in a directory tree.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["pattern"],
+                "properties": {
+                    "pattern": { "type": "string", "description": "Regular expression to search for." },
+                    "path": { "type": "string", "description": "Root path to search (default: workspace)." },
+                    "file_pattern": { "type": "string", "description": "Only search files matching this glob, e.g. '*.rs'." },
+                    "context_lines": { "type": "integer", "description": "Lines of context around each match (default 2)." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "edit_lines".into(),
+            description: "Replace a range of lines in a file.  Lines are 1-indexed.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path", "start_line", "end_line", "new_content"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "start_line": { "type": "integer", "description": "First line to replace (1-indexed, inclusive)." },
+                    "end_line": { "type": "integer", "description": "Last line to replace (1-indexed, inclusive)." },
+                    "new_content": { "type": "string", "description": "Replacement text (may include newlines)." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "insert_at".into(),
+            description: "Insert text before a given 1-indexed line number.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path", "line_number", "content"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "line_number": { "type": "integer", "description": "Insert before this line (1-indexed)." },
+                    "content": { "type": "string" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "append_to".into(),
+            description: "Append text to the end of a file.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path", "content"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "content": { "type": "string" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "create_file".into(),
+            description: "Create a new file with the given content.  Fails if the file already exists.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path", "content"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "content": { "type": "string" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "delete_file".into(),
+            description: "Permanently delete a file from the workspace.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "move_file".into(),
+            description: "Move or rename a file within the workspace.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["from", "to"],
+                "properties": {
+                    "from": { "type": "string" },
+                    "to": { "type": "string" }
+                }
+            }),
+        },
+    ]
 }
