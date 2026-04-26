@@ -128,6 +128,16 @@ impl ChatEngine {
         self.config.tools = tools;
     }
 
+    /// Update the system prompt (e.g. after loading a workspace's skill registry).
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.config.system_prompt = prompt;
+    }
+
+    /// Read-only view of the current engine config (e.g. to read system_prompt).
+    pub fn config(&self) -> &ChatEngineConfig {
+        &self.config
+    }
+
     /// Borrow the event receiver; the caller drains it each frame.
     pub fn events(&self) -> &Receiver<EngineEvent> {
         &self.event_rx
@@ -444,6 +454,119 @@ fn default_tool_defs() -> Vec<ToolDef> {
                     "from": { "type": "string" },
                     "to": { "type": "string" }
                 }
+            }),
+        },
+        ToolDef {
+            name: "replace_in_file".into(),
+            description: "Replace a literal string (or all occurrences) inside a file. Use edit_lines for line-range changes; use this for precise text substitutions.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path", "old_text", "new_text"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "old_text": { "type": "string", "description": "Exact text to find." },
+                    "new_text": { "type": "string", "description": "Replacement text." },
+                    "occurrence": { "type": "integer", "description": "1-based occurrence index to replace. 0 = replace all (default 1)." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "run_shell".into(),
+            description: "Run a shell command in the workspace. Requires shell to be enabled in .ide/tools.toml. Use for npm/cargo/git/npx commands. Always prefer specific tools (read_file, edit_lines) over shell when possible.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["command"],
+                "properties": {
+                    "command": { "type": "string", "description": "The shell command to run. Example: 'npx create-next-app@latest my-app --ts --no-git'." },
+                    "cwd": { "type": "string", "description": "Working directory (workspace-relative). Default: workspace root." },
+                    "timeout_seconds": { "type": "integer", "description": "Max seconds to wait (default 60, max 300)." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "read_metadata".into(),
+            description: "Read the .ide/meta/ sidecar for a file — contains prior AI reasoning, history, and notes.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string", "description": "Workspace-relative source file path." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "write_metadata_note".into(),
+            description: "Append a note to the .ide/meta/ sidecar for a file. Use this to record reasoning, design decisions, or important findings about the file.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path", "note"],
+                "properties": {
+                    "path": { "type": "string", "description": "Workspace-relative source file path." },
+                    "note": { "type": "string", "description": "Note text to append." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "list_tasks".into(),
+            description: "List all project tasks from .ide/tasks.md.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDef {
+            name: "add_task".into(),
+            description: "Add a new task to .ide/tasks.md.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["summary"],
+                "properties": {
+                    "summary": { "type": "string" },
+                    "notes": { "type": "string" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "complete_task".into(),
+            description: "Mark a task as done in .ide/tasks.md.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string", "description": "Task id from list_tasks." }
+                }
+            }),
+        },
+        ToolDef {
+            name: "update_task".into(),
+            description: "Update a task's status or notes in .ide/tasks.md.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "status": { "type": "string", "enum": ["open", "in_progress", "done", "cancelled"] },
+                    "notes": { "type": "string" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "load_skill".into(),
+            description: "Load the full body of a named skill (IDE convention or language guide). Call list_skills first if unsure of the name.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": { "type": "string" }
+                }
+            }),
+        },
+        ToolDef {
+            name: "list_skills".into(),
+            description: "List all available skills with their names and descriptions.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
             }),
         },
     ]

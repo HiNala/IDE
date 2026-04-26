@@ -1089,6 +1089,7 @@ version = "0.1.0-mvp"
 dependencies = [
  "anyhow",
  "arboard",
+ "chrono",
  "criterion",
  "crossbeam-channel",
  "directories",
@@ -1100,6 +1101,7 @@ dependencies = [
  "editor-index",
  "editor-input",
  "editor-io",
+ "editor-metadata",
  "editor-render",
  "editor-search",
  "editor-settings",

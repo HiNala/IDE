@@ -40,21 +40,22 @@ impl TaskList {
     /// Parse checkbox markdown; lines without a `` `id` `` get a synthetic id on next serialize.
     pub fn parse(markdown: &str) -> Result<Self, TaskError> {
         static LINE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?m)^\s*-\s*\[\s*([xX ])\s*\]\s*(?:`([^`]+)`\s+)?(.+?)\s*$")
+            Regex::new(r"(?m)^\s*-\s*\[\s*([xX~\- ])\s*\]\s*(?:`([^`]+)`\s+)?(.+?)\s*$")
                 .expect("regex")
         });
         let mut entries = Vec::new();
         for cap in LINE.captures_iter(markdown) {
-            let done = !cap.get(1).map(|m| m.as_str().trim()).unwrap_or(" ").is_empty();
+            let marker = cap.get(1).map(|m| m.as_str().trim()).unwrap_or(" ");
+            let status = match marker {
+                "x" | "X" => TaskStatus::Done,
+                "~" => TaskStatus::InProgress,
+                "-" => TaskStatus::Cancelled,
+                _ => TaskStatus::Open,
+            };
             let id = cap.get(2).map(|m| m.as_str().to_string()).unwrap_or_else(|| "pending".into());
             let rest = cap.get(3).map(|m| m.as_str().trim()).unwrap_or("").to_string();
             let (summary, notes) = split_notes(&rest);
-            entries.push(Task {
-                id,
-                summary,
-                status: if done { TaskStatus::Done } else { TaskStatus::Open },
-                notes,
-            });
+            entries.push(Task { id, summary, status, notes });
         }
         Ok(TaskList { entries })
     }
@@ -64,9 +65,10 @@ impl TaskList {
         let mut s = String::from("# Project tasks\n\n");
         for e in &self.entries {
             let mark = match e.status {
-                TaskStatus::Open | TaskStatus::InProgress => ' ',
+                TaskStatus::Open => ' ',
+                TaskStatus::InProgress => '~',
                 TaskStatus::Done => 'x',
-                TaskStatus::Cancelled => ' ',
+                TaskStatus::Cancelled => '-',
             };
             let mut line = format!("- [{mark}] `{}` {}", e.id, e.summary);
             if let Some(n) = &e.notes {

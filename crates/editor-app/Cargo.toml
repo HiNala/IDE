@@ -37,6 +37,8 @@ editor-search       = { path = "../editor-search" }
 editor-ai-provider  = { path = "../editor-ai-provider" }
 editor-ai-tools     = { path = "../editor-ai-tools" }
 editor-chat         = { path = "../editor-chat" }
+editor-metadata     = { path = "../editor-metadata" }
+chrono              = { workspace = true }
 
 directories        = { workspace = true }
 serde              = { workspace = true }

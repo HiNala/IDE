@@ -480,6 +480,16 @@ fn run_windowed(
         agent_panel_focused: false,
         agent_view_active: false,
         settings_api_key_buf: String::new(),
+        skill_registry: {
+            let reg = editor_skills::SkillRegistry::load(
+                workspace_hint.as_deref(),
+                &Default::default(),
+            );
+            std::sync::Arc::new(std::sync::RwLock::new(reg))
+        },
+        metadata_store: workspace_hint
+            .as_deref()
+            .map(|root| editor_metadata::MetadataStore::new(root.to_path_buf())),
     };
     app.clamp_cursor_to_buffer();
     app.seed_initial_buffer_into_manager();
@@ -615,6 +625,12 @@ struct App {
     agent_view_active: bool,
     /// API key being typed in the settings overlay (cleared on close).
     settings_api_key_buf: String,
+    // --- M27 skills system -----------------------------------------------------------
+    /// Loaded skill registry; skills are injected into the AI system prompt on submit.
+    skill_registry: std::sync::Arc<std::sync::RwLock<editor_skills::SkillRegistry>>,
+    // --- M21 metadata sidecar --------------------------------------------------------
+    /// Sidecar store for the current workspace; `None` when no workspace is open.
+    metadata_store: Option<editor_metadata::MetadataStore>,
 }
 
 /// The prefix half of a two-key chord. Currently only `Ctrl+K` is used.
@@ -1042,6 +1058,8 @@ impl App {
                 self.load_state_from_buffer(id);
                 self.reveal_active_in_sidebar();
                 self.sync_window_title();
+                // M21: inject prior AI reasoning from sidecar into active conversation.
+                self.inject_file_metadata_context();
             }
             Err(e) => warn!(path = %path.display(), error = %e, "open_path_as_buffer: load failed"),
         }
@@ -1050,7 +1068,8 @@ impl App {
     fn open_workspace_folder(&mut self, root: &Path) {
         match Workspace::open(root) {
             Ok(ws) => {
-                info!(root = %ws.root().display(), "workspace opened");
+                let ws_root = ws.root().to_path_buf();
+                info!(root = %ws_root.display(), "workspace opened");
                 self.workspace = Some(ws);
                 self.rebuild_workspace_entries();
                 self.refresh_git_branch(true);
@@ -1059,6 +1078,44 @@ impl App {
                     self.sidebar.visible = true;
                 }
                 self.reveal_active_in_sidebar();
+
+                // M21: create a metadata store for this workspace.
+                self.metadata_store =
+                    Some(editor_metadata::MetadataStore::new(ws_root.clone()));
+
+                // M27: reload skills for the new workspace root.
+                if let Ok(mut sr) = self.skill_registry.write() {
+                    *sr = editor_skills::SkillRegistry::load(
+                        Some(&ws_root),
+                        &Default::default(),
+                    );
+                }
+
+                // Rebuild tool schemas to include any workspace-specific tools.
+                let tools = editor_chat::ChatEngineConfig::default().tools;
+                self.chat_engine.set_tools(tools);
+
+                // Auto-create .ide/tools.toml if missing so the user knows how to enable shell.
+                let tools_toml = ws_root.join(".ide").join("tools.toml");
+                if !tools_toml.exists() {
+                    let _ = std::fs::create_dir_all(ws_root.join(".ide"));
+                    let _ = std::fs::write(
+                        &tools_toml,
+                        "# Antigravity IDE tool configuration\n\
+                         # Enable the AI shell tool and specify allowed command prefixes.\n\
+                         # SECURITY: only enable this if you trust the AI to run commands.\n\
+                         \n\
+                         [shell]\n\
+                         enabled = false\n\
+                         allowed_prefixes = [\n\
+                         \x20 \"npm\", \"npx\", \"node\", \"cargo\", \"git\",\n\
+                         \x20 \"python\", \"python3\", \"pip\", \"pip3\",\n\
+                         \x20 \"tsc\", \"eslint\", \"prettier\",\n\
+                         \x20 \"make\", \"ls\", \"cat\", \"echo\", \"mkdir\", \"cp\", \"mv\"\n\
+                         ]\n",
+                    );
+                    info!(path = %tools_toml.display(), "created default .ide/tools.toml");
+                }
             }
             Err(e) => warn!(error = %e, root = %root.display(), "workspace open failed"),
         }
