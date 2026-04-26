@@ -4,6 +4,28 @@ use std::path::Path;
 
 use editor_ai_tools::ToolConfig;
 
+/// Patterns that are never permitted regardless of the allow-list.
+/// These protect the user's shell config, SSH keys, and system dirs.
+const DANGEROUS_PATTERNS: &[&str] = &[
+    ".bashrc", ".zshrc", ".bash_profile", ".profile", ".zprofile",
+    ".ssh/", "authorized_keys", "known_hosts",
+    "/etc/", "/usr/", "/bin/", "/sbin/",
+    "sudoers", "passwd", "shadow",
+    // Windows equivalents
+    "System32", "SysWOW64", "\\Windows\\",
+    "HKEY_", "reg add", "reg delete",
+];
+
+fn is_dangerous(command: &str) -> Option<&'static str> {
+    let lower = command.to_lowercase();
+    for pat in DANGEROUS_PATTERNS {
+        if lower.contains(&pat.to_lowercase()) {
+            return Some(pat);
+        }
+    }
+    None
+}
+
 pub(super) fn tool_run_shell(input: &serde_json::Value, workspace_root: &Path) -> (String, bool) {
     let command = match input["command"].as_str() {
         Some(s) => s,
@@ -30,6 +52,17 @@ pub(super) fn tool_run_shell(input: &serde_json::Value, workspace_root: &Path) -
             format!(
                 "Command prefix '{first_word}' is not in the allowed list. \
                  Add it to .ide/tools.toml under [shell] allowed_prefixes."
+            ),
+            true,
+        );
+    }
+
+    // Secondary safety check: block writes to sensitive paths regardless of allow-list.
+    if let Some(pat) = is_dangerous(command) {
+        return (
+            format!(
+                "Command blocked: contains sensitive pattern '{pat}'. \
+                 Shell commands must not target shell configs, SSH keys, or system directories."
             ),
             true,
         );
@@ -68,6 +101,19 @@ mod tests {
 
     fn tmp() -> TempDir { tempfile::tempdir().unwrap() }
 
+    fn enabled_workspace(d: &TempDir, prefixes: &[&str]) {
+        let ide = d.path().join(".ide");
+        std::fs::create_dir_all(&ide).unwrap();
+        let prefix_toml: String = prefixes.iter()
+            .map(|p| format!("\"{p}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            ide.join("tools.toml"),
+            format!("[shell]\nenabled = true\nallowed_prefixes = [{prefix_toml}]\n"),
+        ).unwrap();
+    }
+
     #[test]
     fn disabled_by_default() {
         let d = tmp();
@@ -82,26 +128,40 @@ mod tests {
     #[test]
     fn disallowed_prefix_rejected() {
         let d = tmp();
-        let ide = d.path().join(".ide");
-        std::fs::create_dir_all(&ide).unwrap();
-        std::fs::write(
-            ide.join("tools.toml"),
-            "[shell]\nenabled = true\nallowed_prefixes = [\"npm\"]\n",
-        ).unwrap();
+        enabled_workspace(&d, &["npm"]);
         let (out, err) = tool_run_shell(&serde_json::json!({"command":"rm -rf /"}), d.path());
         assert!(err, "{out}");
         assert!(out.contains("not in the allowed list"), "{out}");
     }
 
     #[test]
+    fn dangerous_pattern_blocked_even_when_allowed() {
+        let d = tmp();
+        enabled_workspace(&d, &["echo"]);
+        let (out, err) = tool_run_shell(
+            &serde_json::json!({"command": "echo foo >> ~/.bashrc"}),
+            d.path(),
+        );
+        assert!(err, "{out}");
+        assert!(out.contains("blocked"), "{out}");
+    }
+
+    #[test]
+    fn ssh_key_write_blocked() {
+        let d = tmp();
+        enabled_workspace(&d, &["cat"]);
+        let (out, err) = tool_run_shell(
+            &serde_json::json!({"command": "cat id_rsa.pub >> ~/.ssh/authorized_keys"}),
+            d.path(),
+        );
+        assert!(err, "{out}");
+        assert!(out.contains("blocked"), "{out}");
+    }
+
+    #[test]
     fn echo_succeeds_when_allowed() {
         let d = tmp();
-        let ide = d.path().join(".ide");
-        std::fs::create_dir_all(&ide).unwrap();
-        std::fs::write(
-            ide.join("tools.toml"),
-            "[shell]\nenabled = true\nallowed_prefixes = [\"echo\"]\n",
-        ).unwrap();
+        enabled_workspace(&d, &["echo"]);
         let (out, err) = tool_run_shell(
             &serde_json::json!({"command": "echo antigravity_test"}),
             d.path(),

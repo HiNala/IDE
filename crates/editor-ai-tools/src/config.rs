@@ -50,6 +50,10 @@ impl Default for ShellSection {
 pub struct ToolConfig {
     #[serde(default)]
     pub shell: ShellSection,
+    /// When `true`, destructive tools (delete_file, move_file, run_shell) execute without
+    /// a confirmation gate. Defaults to `false` — safe for review sessions.
+    #[serde(default)]
+    pub auto_approve: bool,
 }
 
 impl ToolConfig {

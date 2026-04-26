@@ -28,6 +28,20 @@ use crate::App;
 // Re-export the public dispatch function so main.rs / tests can call it.
 pub(crate) use tools::execute_tool;
 
+/// Tools that permanently alter or destroy files / execute arbitrary code.
+/// These are blocked unless `auto_approve = true` in `.ide/tools.toml`.
+const DESTRUCTIVE_TOOLS: &[&str] = &["delete_file", "move_file", "run_shell"];
+
+fn is_destructive_tool(name: &str) -> bool {
+    DESTRUCTIVE_TOOLS.contains(&name)
+}
+
+fn auto_approve_enabled(workspace_root: &std::path::Path) -> bool {
+    editor_ai_tools::ToolConfig::load_from_workspace_root(workspace_root)
+        .map(|c| c.auto_approve)
+        .unwrap_or(false)
+}
+
 impl App {
     // ── Event polling ─────────────────────────────────────────────────────────
 
@@ -52,12 +66,14 @@ impl App {
         for ev in events {
             match ev {
                 EngineEvent::TextDelta { session_id, message_id, delta } => {
+                    self.chat_last_delta_at = Some(std::time::Instant::now());
                     if let Some(conv) = self.chat_conversations.get_mut(&session_id) {
                         conv.append_text(message_id, &delta);
                     }
                 }
 
                 EngineEvent::Done { session_id, message_id, stop_reason, tokens_out } => {
+                    self.chat_last_delta_at = None;
                     if let Some(conv) = self.chat_conversations.get_mut(&session_id) {
                         conv.finish_streaming(message_id, stop_reason, tokens_out);
                     }
@@ -69,6 +85,7 @@ impl App {
                 }
 
                 EngineEvent::Error { session_id, message_id, message } => {
+                    self.chat_last_delta_at = None;
                     tracing::warn!(session_id, %message, "AI stream error");
                     if let Some(conv) = self.chat_conversations.get_mut(&session_id) {
                         conv.append_text(message_id, &format!("\n⚠ {message}"));
@@ -77,8 +94,41 @@ impl App {
                     self.set_session_status(session_id, AgentSessionStatus::Done);
                 }
 
+                EngineEvent::Cancelled { session_id, message_id } => {
+                    self.chat_last_delta_at = None;
+                    if let Some(conv) = self.chat_conversations.get_mut(&session_id) {
+                        conv.append_text(message_id, "\n[cancelled]");
+                        conv.finish_streaming(message_id, Some("cancelled".into()), 0);
+                    }
+                    self.set_session_status(session_id, AgentSessionStatus::Done);
+                }
+
                 EngineEvent::ToolCall { session_id, call_id, name, input_json, result_tx } => {
                     tracing::debug!(session_id, call_id, %name, "executing tool call");
+
+                    // Safety gate: block destructive tools unless auto_approve is enabled.
+                    if is_destructive_tool(&name) && !auto_approve_enabled(&workspace_root) {
+                        let preview = if input_json.len() > 120 {
+                            format!("{}…", &input_json[..120])
+                        } else {
+                            input_json.clone()
+                        };
+                        if let Some(conv) = self.chat_conversations.get_mut(&session_id) {
+                            conv.push_tool_note(format!(
+                                "🔒 Blocked destructive tool `{name}`: {preview}\n   \
+                                 To allow shell/delete/move tools, set `auto_approve = true` \
+                                 in .ide/tools.toml."
+                            ));
+                        }
+                        let _ = result_tx.send((
+                            format!(
+                                "Tool '{name}' requires user confirmation. \
+                                 Set auto_approve = true in .ide/tools.toml to enable it."
+                            ),
+                            true,
+                        ));
+                        continue;
+                    }
 
                     let preview = if input_json.len() > 80 {
                         format!("{}…", &input_json[..80])
@@ -141,6 +191,24 @@ impl App {
             return;
         }
 
+        // Sync engine config from current settings (model, max_tokens, temperature).
+        {
+            let s = self.settings_store.settings();
+            let model = s.ai.active_model.clone()
+                .or_else(|| {
+                    s.ai.active_provider.as_deref()
+                        .and_then(|p| s.ai.providers.get(p))
+                        .map(|pc| pc.default_model.clone())
+                });
+            if let Some(m) = model {
+                if !m.is_empty() {
+                    self.chat_engine.set_model(m);
+                }
+            }
+            self.chat_engine.set_max_tokens(s.ai.max_tokens_default);
+            self.chat_engine.set_temperature(s.ai.temperature_default);
+        }
+
         // Phase 6: augment system prompt with loaded skill context.
         {
             let base = self.chat_engine.config().system_prompt.clone();
@@ -152,7 +220,11 @@ impl App {
             }
         }
 
-        let history: Vec<(ChatRole, String)> = self
+        // Build history with a sliding window: keep the most recent exchanges to
+        // avoid overflowing the model's context window (~140 k token budget).
+        // We estimate ~4 chars/token and cap at 100k chars of history (~25k tokens).
+        const HISTORY_CHAR_BUDGET: usize = 100_000;
+        let mut history: Vec<(ChatRole, String)> = self
             .chat_conversations
             .get(&session_id)
             .map(|c| {
@@ -167,8 +239,42 @@ impl App {
             })
             .unwrap_or_default();
 
+        // Drop oldest messages from the front until under budget.
+        let total_chars: usize = history.iter().map(|(_, t)| t.len()).sum();
+        if total_chars > HISTORY_CHAR_BUDGET {
+            let mut running = total_chars;
+            let mut drop_until = 0;
+            for (i, (_, text)) in history.iter().enumerate() {
+                if running <= HISTORY_CHAR_BUDGET { break; }
+                running -= text.len();
+                drop_until = i + 1;
+            }
+            if drop_until > 0 {
+                history.drain(..drop_until);
+                if let Some(conv) = self.chat_conversations.get_mut(&session_id) {
+                    conv.push_note(
+                        "ℹ Context window: oldest messages dropped to stay under the token limit.",
+                    );
+                }
+            }
+        }
+
+        // Estimate token usage for the current context (4 chars ≈ 1 token).
+        let prompt_chars: usize = prompt.len()
+            + history.iter().map(|(_, t)| t.len()).sum::<usize>()
+            + self.chat_engine.config().system_prompt.len();
+        let est_tokens = prompt_chars / 4;
+        tracing::debug!(est_tokens, "pre-flight token estimate");
+
         let conv = self.chat_conversations.entry(session_id).or_insert_with(Conversation::new);
         conv.push_user(prompt.clone());
+        // Surface a note if the context is getting large (>80k estimated tokens).
+        if est_tokens > 80_000 {
+            conv.push_note(&format!(
+                "⚠ Estimated context: ~{est_tokens} tokens — approaching model limit. \
+                 Oldest history has been trimmed."
+            ));
+        }
         let msg_id = conv.push_assistant_streaming();
 
         self.set_session_status(session_id, AgentSessionStatus::Running);
@@ -207,7 +313,17 @@ impl App {
 
         match code {
             KeyCode::Escape => {
-                self.agent_panel_focused = false;
+                // If a stream is active, cancel it; otherwise unfocus the panel.
+                if self.chat_engine.is_cancelling() || {
+                    let running = self.agent_panel.sessions.iter().any(|s| {
+                        s.status == AgentSessionStatus::Running
+                    });
+                    running
+                } {
+                    self.chat_engine.cancel_stream();
+                } else {
+                    self.agent_panel_focused = false;
+                }
                 return true;
             }
             KeyCode::Enter => {
@@ -462,5 +578,32 @@ impl App {
     pub(crate) fn clear_chat_input(&mut self) {
         self.chat_input.clear();
         self.chat_input_cursor = 0;
+    }
+
+    /// Call once per frame while a stream is active.
+    /// Injects a stall warning note after 12 s of silence, and resets so it only fires once.
+    /// Returns `true` if the UI needs a redraw.
+    pub(crate) fn check_chat_stall(&mut self) -> bool {
+        const STALL_SECS: u64 = 12;
+        let Some(last) = self.chat_last_delta_at else { return false; };
+        if last.elapsed().as_secs() < STALL_SECS { return false; }
+
+        let is_running = self.agent_panel.sessions.iter()
+            .any(|s| s.status == AgentSessionStatus::Running);
+        if !is_running { return false; }
+
+        // Clear so this fires only once per stall period.
+        self.chat_last_delta_at = None;
+
+        let session_id = self.agent_panel.sessions
+            .get(self.agent_panel.active_session)
+            .map(|s| s.id);
+        if let Some(sid) = session_id {
+            let conv = self.chat_conversations.entry(sid).or_insert_with(editor_chat::Conversation::new);
+            conv.push_note(
+                "⏳ Stream has been silent for >12 s. Press Escape to cancel and retry."
+            );
+        }
+        true
     }
 }

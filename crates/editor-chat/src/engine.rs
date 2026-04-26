@@ -13,6 +13,7 @@
 //!   - The engine then re-submits with the tool result and continues streaming.
 //!   - Up to [`MAX_TOOL_ROUNDS`] rounds per turn.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,8 +22,8 @@ use futures::StreamExt;
 use tracing::{debug, warn};
 
 use editor_ai_provider::{
-    AiProvider, ChatEvent as ProviderChatEvent, ChatRequest, ContentBlock, Message,
-    ProviderRegistry, ToolDef,
+    AiProvider, ChatEvent as ProviderChatEvent, ChatEventStream, ChatRequest, ContentBlock,
+    Message, ProviderRegistry, ToolDef,
 };
 
 use crate::conversation::{ChatRole, MessageId};
@@ -40,6 +41,8 @@ pub enum EngineEvent {
     Done { session_id: u64, message_id: MessageId, stop_reason: Option<String>, tokens_out: u32 },
     /// An error terminated the stream.
     Error { session_id: u64, message_id: MessageId, message: String },
+    /// The stream was cancelled by the user.
+    Cancelled { session_id: u64, message_id: MessageId },
     /// The model requested a tool call.
     ///
     /// The receiver **must** send `(result_content, is_error)` back via `result_tx`
@@ -62,6 +65,8 @@ pub struct ChatEngineConfig {
     pub default_model: String,
     /// Maximum tokens to request per turn.
     pub max_tokens: u32,
+    /// Sampling temperature; `None` uses the provider/model default.
+    pub temperature: Option<f32>,
     /// System prompt injected at every turn.
     pub system_prompt: String,
     /// Tool schemas exposed to the model.  Empty = no tools.
@@ -73,6 +78,7 @@ impl Default for ChatEngineConfig {
         Self {
             default_model: "claude-opus-4-7".into(),
             max_tokens: 8192,
+            temperature: None,
             system_prompt: "You are an expert coding assistant integrated into a GPU-rendered \
                             Rust IDE called Antigravity. You have access to file-system tools \
                             to read, search, and edit code. Be concise and precise. Reference \
@@ -91,6 +97,8 @@ pub struct ChatEngine {
     config: ChatEngineConfig,
     event_tx: Sender<EngineEvent>,
     event_rx: Receiver<EngineEvent>,
+    /// Set to `true` by the UI thread to request cancellation of the active stream.
+    cancel_flag: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for ChatEngine {
@@ -110,7 +118,14 @@ impl ChatEngine {
             .build()
             .expect("failed to start chat tokio runtime");
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
-        Self { rt: Arc::new(rt), registry: None, config, event_tx, event_rx }
+        Self {
+            rt: Arc::new(rt),
+            registry: None,
+            config,
+            event_tx,
+            event_rx,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// Install a provider registry (built from the user's settings/keyring).
@@ -133,6 +148,21 @@ impl ChatEngine {
         self.config.system_prompt = prompt;
     }
 
+    /// Update the max tokens per turn from user settings.
+    pub fn set_max_tokens(&mut self, max_tokens: u32) {
+        self.config.max_tokens = max_tokens;
+    }
+
+    /// Update the temperature from user settings (`None` = model default).
+    pub fn set_temperature(&mut self, temperature: Option<f32>) {
+        self.config.temperature = temperature;
+    }
+
+    /// Update the active model id from user settings.
+    pub fn set_model(&mut self, model: String) {
+        self.config.default_model = model;
+    }
+
     /// Read-only view of the current engine config (e.g. to read system_prompt).
     pub fn config(&self) -> &ChatEngineConfig {
         &self.config
@@ -141,6 +171,17 @@ impl ChatEngine {
     /// Borrow the event receiver; the caller drains it each frame.
     pub fn events(&self) -> &Receiver<EngineEvent> {
         &self.event_rx
+    }
+
+    /// Request cancellation of the currently active stream.
+    /// The background task will emit a `Cancelled` event shortly after.
+    pub fn cancel_stream(&self) {
+        self.cancel_flag.store(true, Ordering::Relaxed);
+    }
+
+    /// True if there is an active cancel request pending.
+    pub fn is_cancelling(&self) -> bool {
+        self.cancel_flag.load(Ordering::Relaxed)
     }
 
     /// Submit a user prompt for streaming.
@@ -160,6 +201,9 @@ impl ChatEngine {
         let provider = registry.active().ok_or(ChatError::NoProvider)?;
         let config = self.config.clone();
         let tx = self.event_tx.clone();
+        // Reset cancel flag before each new stream.
+        self.cancel_flag.store(false, Ordering::Relaxed);
+        let cancel = Arc::clone(&self.cancel_flag);
 
         // Build initial messages from history.
         let mut messages: Vec<Message> = history
@@ -175,10 +219,57 @@ impl ChatEngine {
         messages.push(Message::User { content: vec![ContentBlock::Text(prompt)] });
 
         self.rt.spawn(async move {
-            run_stream(session_id, message_id, messages, provider, config, tx).await;
+            run_stream(session_id, message_id, messages, provider, config, cancel, tx).await;
         });
         Ok(())
     }
+}
+
+/// Call `provider.chat()` with exponential backoff on retryable errors.
+/// Retries up to 3 times (delays: ~1s, ~2s, ~4s with ±20% jitter).
+/// Aborts immediately if `cancel` is set.
+async fn chat_with_backoff(
+    provider: &Arc<dyn AiProvider>,
+    request: ChatRequest,
+    cancel: &Arc<AtomicBool>,
+) -> std::result::Result<ChatEventStream, String> {
+    const MAX_RETRIES: u32 = 3;
+    let mut attempt = 0u32;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+        match provider.chat(request.clone()).await {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                let is_retryable = is_retryable_error(&e);
+                attempt += 1;
+                if !is_retryable || attempt >= MAX_RETRIES {
+                    return Err(e.to_string());
+                }
+                // Backoff: 1s, 2s, 4s with ±20% jitter (using nanos as cheap entropy).
+                let base_ms = 1000u64 << (attempt - 1);
+                let jitter = (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_nanos() % 400) as u64;
+                let delay_ms = base_ms.saturating_sub(200).saturating_add(jitter);
+                warn!(attempt, delay_ms, error = %e, "retryable API error; backing off");
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
+fn is_retryable_error(e: &editor_ai_provider::ProviderError) -> bool {
+    let msg = e.to_string().to_lowercase();
+    msg.contains("429")
+        || msg.contains("503")
+        || msg.contains("502")
+        || msg.contains("overloaded")
+        || msg.contains("rate limit")
+        || msg.contains("timeout")
+        || msg.contains("connection")
 }
 
 async fn run_stream(
@@ -187,29 +278,34 @@ async fn run_stream(
     mut messages: Vec<Message>,
     provider: Arc<dyn AiProvider>,
     config: ChatEngineConfig,
+    cancel: Arc<AtomicBool>,
     tx: Sender<EngineEvent>,
 ) {
     let mut total_tokens_out = 0u32;
 
     for _round in 0..MAX_TOOL_ROUNDS {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = tx.send(EngineEvent::Cancelled { session_id, message_id });
+            return;
+        }
         let request = ChatRequest {
             model: config.default_model.clone(),
             system: Some(config.system_prompt.clone()),
             messages: messages.clone(),
             tools: config.tools.clone(),
             max_tokens: config.max_tokens,
-            temperature: None,
+            temperature: config.temperature,
             stop: vec![],
             stream: true,
         };
 
-        let stream = match provider.chat(request).await {
+        let stream = match chat_with_backoff(&provider, request, &cancel).await {
             Ok(s) => s,
             Err(e) => {
                 let _ = tx.send(EngineEvent::Error {
                     session_id,
                     message_id,
-                    message: e.to_string(),
+                    message: e,
                 });
                 return;
             }
@@ -240,6 +336,10 @@ async fn run_stream(
                     assistant_text.push_str(&delta);
                     let _ =
                         tx.send(EngineEvent::TextDelta { session_id, message_id, delta });
+                    if cancel.load(Ordering::Relaxed) {
+                        let _ = tx.send(EngineEvent::Cancelled { session_id, message_id });
+                        return;
+                    }
                 }
                 ProviderChatEvent::Done { usage, stop_reason: sr } => {
                     total_tokens_out =

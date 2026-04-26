@@ -215,6 +215,8 @@ impl AgentPanel {
         chat_input_cursor: usize,
         input_focused: bool,
         blink_on: bool,
+        // Display label for the active AI model (e.g. "claude-sonnet-4-6").
+        active_model: &str,
     ) -> AgentPanelHits {
         if !self.visible || height_px <= 0.5 {
             return AgentPanelHits::default();
@@ -348,10 +350,11 @@ impl AgentPanel {
         );
 
         // Model selector (left side of bottom row).
+        let model_label = if active_model.is_empty() { "no model set" } else { active_model };
         chrome.push_line(
             left_px + pad + scale,
             bottom_top + (bottom_row_h - 9.0 * scale) / 2.0,
-            "Claude Opus 4.7".to_string(),
+            model_label.to_string(),
             pal::AGENT_HEADER_FG,
         );
 

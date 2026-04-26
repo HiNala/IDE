@@ -479,7 +479,10 @@ fn run_windowed(
         chat_input_cursor: 0,
         agent_panel_focused: false,
         agent_view_active: false,
+        chat_last_delta_at: None,
+        settings_active_field: SettingsField::ApiKey,
         settings_api_key_buf: String::new(),
+        settings_model_buf: String::new(),
         skill_registry: {
             let reg = editor_skills::SkillRegistry::load(
                 workspace_hint.as_deref(),
@@ -503,6 +506,14 @@ fn run_windowed(
     }
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// Which input field in the settings overlay currently has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SettingsField {
+    #[default]
+    ApiKey,
+    Model,
 }
 
 struct App {
@@ -623,8 +634,14 @@ struct App {
     agent_panel_focused: bool,
     /// When true the center area shows the active agent session's conversation.
     agent_view_active: bool,
+    /// Last time a TextDelta arrived; used to detect stalled streams.
+    chat_last_delta_at: Option<std::time::Instant>,
+    /// Which field in the settings overlay has cursor focus.
+    settings_active_field: SettingsField,
     /// API key being typed in the settings overlay (cleared on close).
     settings_api_key_buf: String,
+    /// Model name being typed in the settings overlay.
+    settings_model_buf: String,
     // --- M27 skills system -----------------------------------------------------------
     /// Loaded skill registry; skills are injected into the AI system prompt on submit.
     skill_registry: std::sync::Arc<std::sync::RwLock<editor_skills::SkillRegistry>>,
@@ -2385,7 +2402,7 @@ impl App {
         if let Err(e) = self.settings_store.flush_pending_save() {
             warn!(error = %e, "settings: debounced save failed");
         }
-        if self.poll_chat_events() {
+        if self.poll_chat_events() || self.check_chat_stall() {
             self.request_redraw();
         }
     }
@@ -2838,6 +2855,12 @@ impl App {
         {
             let panel_left = physical.width as f32 - agent_w;
             let panel_h = (physical.height as f32 - status_h).max(1.0);
+            let s = self.settings_store.settings();
+            let active_model = s.ai.active_model.as_deref().or_else(|| {
+                s.ai.active_provider.as_deref()
+                    .and_then(|p| s.ai.providers.get(p))
+                    .map(|pc| pc.default_model.as_str())
+            }).unwrap_or("");
             self.agent_panel_hits = self.agent_panel.paint(
                 &mut chrome,
                 scale,
@@ -2849,6 +2872,7 @@ impl App {
                 self.chat_input_cursor,
                 self.agent_panel_focused,
                 self.blink_on,
+                active_model,
             );
         }
 
@@ -3051,71 +3075,124 @@ impl App {
         use winit::keyboard::{KeyCode, PhysicalKey};
         let PhysicalKey::Code(code) = event.physical_key else { return false; };
         let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
+
         match code {
+            // Tab cycles between fields.
+            KeyCode::Tab => {
+                self.settings_active_field = match self.settings_active_field {
+                    SettingsField::ApiKey => SettingsField::Model,
+                    SettingsField::Model => SettingsField::ApiKey,
+                };
+                self.settings_overlay_lines = Some(self.build_settings_lines());
+                return true;
+            }
             KeyCode::Enter => {
-                let key = self.settings_api_key_buf.trim().to_string();
-                if !key.is_empty() {
-                    let store = editor_ai_provider::SecretStore::new();
-                    if let Err(e) = store.set_key("anthropic", &key) {
-                        tracing::warn!("keyring write failed: {e}");
-                    } else {
-                        tracing::info!("Anthropic API key saved to keychain");
-                        // Rebuild the provider registry with the new key.
-                        if let Ok(cfg) = editor_ai_provider::load_or_create_default(None) {
-                            match editor_ai_provider::ProviderRegistry::from_config(&cfg, &store) {
-                                Ok(reg) => {
-                                    self.chat_engine.set_registry(reg);
-                                    tracing::info!("AI provider registry refreshed");
-                                }
-                                Err(e) => tracing::warn!("registry rebuild: {e}"),
-                            }
-                        }
-                        self.settings_api_key_buf.clear();
-                        self.settings_overlay_lines = Some(self.build_settings_lines());
-                    }
-                }
-                true
+                self.settings_save_active_field();
+                self.settings_overlay_lines = Some(self.build_settings_lines());
+                return true;
             }
             KeyCode::Backspace if !ctrl => {
-                self.settings_api_key_buf.pop();
+                match self.settings_active_field {
+                    SettingsField::ApiKey => { self.settings_api_key_buf.pop(); }
+                    SettingsField::Model  => { self.settings_model_buf.pop(); }
+                }
                 self.settings_overlay_lines = Some(self.build_settings_lines());
-                true
+                return true;
             }
             _ => {
                 if !ctrl {
                     if let Some(t) = &event.text {
                         if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
-                            self.settings_api_key_buf.push_str(t);
+                            match self.settings_active_field {
+                                SettingsField::ApiKey => self.settings_api_key_buf.push_str(t),
+                                SettingsField::Model  => self.settings_model_buf.push_str(t),
+                            }
                             self.settings_overlay_lines = Some(self.build_settings_lines());
                             return true;
                         }
                     }
                 }
-                false
+            }
+        }
+        false
+    }
+
+    /// Persist whichever settings field is currently active.
+    fn settings_save_active_field(&mut self) {
+        match self.settings_active_field {
+            SettingsField::ApiKey => {
+                let key = self.settings_api_key_buf.trim().to_string();
+                if key.is_empty() { return; }
+                // Use the active provider name, falling back to "anthropic".
+                let provider_name = self.settings_store.settings()
+                    .ai.active_provider.clone()
+                    .unwrap_or_else(|| "anthropic".into());
+                let store = editor_ai_provider::SecretStore::new();
+                if let Err(e) = store.set_key(&provider_name, &key) {
+                    tracing::warn!("keyring write failed: {e}");
+                } else {
+                    tracing::info!(provider = %provider_name, "API key saved to keychain");
+                    if let Ok(cfg) = editor_ai_provider::load_or_create_default(None) {
+                        match editor_ai_provider::ProviderRegistry::from_config(&cfg, &store) {
+                            Ok(reg) => {
+                                self.chat_engine.set_registry(reg);
+                                tracing::info!("AI provider registry refreshed");
+                            }
+                            Err(e) => tracing::warn!("registry rebuild: {e}"),
+                        }
+                    }
+                    self.settings_api_key_buf.clear();
+                }
+            }
+            SettingsField::Model => {
+                let model = self.settings_model_buf.trim().to_string();
+                if model.is_empty() { return; }
+                self.settings_store.settings_mut().ai.active_model = Some(model.clone());
+                self.chat_engine.set_model(model.clone());
+                tracing::info!(model, "Active model updated from settings");
+                self.settings_model_buf.clear();
             }
         }
     }
 
-    /// Build the settings overlay lines, including the live API key input field.
+    /// Build the settings overlay lines with live-editable API key and model fields.
     fn build_settings_lines(&self) -> Vec<String> {
+        let s = self.settings_store.settings();
         let has_provider = self.chat_engine.has_provider();
+        let provider_name = s.ai.active_provider.as_deref().unwrap_or("anthropic");
+
+        // API key field.
+        let key_cursor = if self.settings_active_field == SettingsField::ApiKey { "\u{25b8} " } else { "  " };
         let key_display = if self.settings_api_key_buf.is_empty() {
-            if has_provider { "  (key configured)" } else { "  (no key — type below)" }.to_string()
+            if has_provider { "(key configured)".into() } else { "(no key — type here)".into() }
         } else {
-            let masked: String = self.settings_api_key_buf
-                .chars()
-                .enumerate()
+            let masked: String = self.settings_api_key_buf.chars().enumerate()
                 .map(|(i, c)| if i < 7 { c } else { '\u{2022}' })
                 .collect();
-            format!("  \u{25b8} {masked}")
+            masked
+        };
+
+        // Model field.
+        let model_cursor = if self.settings_active_field == SettingsField::Model { "\u{25b8} " } else { "  " };
+        let current_model = s.ai.active_model.as_deref()
+            .or_else(|| s.ai.providers.get(provider_name).map(|p| p.default_model.as_str()))
+            .unwrap_or("(none)");
+        let model_display = if self.settings_model_buf.is_empty() {
+            format!("{current_model}  (Tab to edit)")
+        } else {
+            format!("{}_", self.settings_model_buf)
         };
 
         let mut lines = vec![
             "  \u{2699}  Settings".to_string(),
             String::new(),
-            "  \u{2500} Anthropic API Key \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
-            key_display,
-            "  Type key then press Enter to save \u{b7} Esc to close".to_string(),
+            format!("  \u{2500} {provider_name} API Key \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"),
+            format!("  {key_cursor}{key_display}"),
+            String::new(),
+            format!("  \u{2500} Active Model \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"),
+            format!("  {model_cursor}{model_display}"),
+            String::new(),
+            "  Tab \u{2192} next field  \u{b7}  Enter \u{2192} save  \u{b7}  Esc \u{2192} close".to_string(),
             String::new(),
         ];
         lines.extend(format_settings_overlay(&self.settings_store));
@@ -3413,6 +3490,8 @@ impl App {
             }
             EditorCommand::OpenSettings => {
                 self.settings_api_key_buf.clear();
+                self.settings_model_buf.clear();
+                self.settings_active_field = SettingsField::ApiKey;
                 self.settings_overlay_lines = Some(self.build_settings_lines());
                 self.request_redraw();
                 false
@@ -3443,6 +3522,7 @@ impl App {
                 }
                 if self.settings_overlay_lines.take().is_some() {
                     self.settings_api_key_buf.clear();
+                    self.settings_model_buf.clear();
                     self.request_redraw();
                 }
                 false
