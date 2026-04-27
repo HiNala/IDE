@@ -57,7 +57,6 @@ pub fn compute_gutter_width_px(total_lines: usize, scale_factor: f32) -> (f32, f
     (gutter_w, char_w)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_layer_text_areas<'a>(
     gutter_buffers: &'a [Buffer],
     line_buffers: &'a [Buffer],
@@ -94,7 +93,11 @@ fn build_layer_text_areas<'a>(
                 right: gutter_right.min(clip_right),
                 bottom: clip_bottom,
             },
-            default_color: Color::rgb(0x70, 0x70, 0x8a),
+            default_color: Color::rgb(
+                palette::EDITOR_FG_DIM[0],
+                palette::EDITOR_FG_DIM[1],
+                palette::EDITOR_FG_DIM[2],
+            ),
             custom_glyphs: &[],
         });
         areas.push(TextArea {
@@ -131,9 +134,84 @@ fn push_dev_hud_text_area<'a>(
     }
 }
 
+/// Status bar: three taffy columns with per-cluster clipping (see `docs/UI_STRATEGY.md`).
+fn push_status_cluster_text_areas<'a>(
+    areas: &mut Vec<TextArea<'a>>,
+    status_bar: &StatusBarLayout,
+    physical_size: PhysicalSize<u32>,
+    status_h: f32,
+    left: &'a Buffer,
+    center: &'a Buffer,
+    right: &'a Buffer,
+) {
+    let Some(ref layout) = status_bar.taffy else {
+        return;
+    };
+    let w_screen = physical_size.width as i32;
+    let h = physical_size.height as i32;
+    let clip_top = (physical_size.height as f32 - status_h).max(0.0).round() as i32;
+    let top = physical_size.height as f32 - status_h + 4.0;
+    let fg =
+        Color::rgb(palette::STATUS_BAR_FG[0], palette::STATUS_BAR_FG[1], palette::STATUS_BAR_FG[2]);
+    for (buf, widget_id) in [(left, 1_u64), (center, 2_u64), (right, 3_u64)] {
+        let Some(item) = layout.items.iter().find(|i| i.widget_id == widget_id) else {
+            continue;
+        };
+        let clip_l = item.rect.x.floor() as i32;
+        let clip_r = (item.rect.x + item.rect.width).ceil() as i32;
+        areas.push(TextArea {
+            buffer: buf,
+            left: item.rect.x + 8.0,
+            top,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: clip_l.max(0),
+                top: clip_top,
+                right: clip_r.min(w_screen),
+                bottom: h,
+            },
+            default_color: fg,
+            custom_glyphs: &[],
+        });
+    }
+}
+
+fn append_status_bar_text_areas<'a>(
+    areas: &mut Vec<TextArea<'a>>,
+    status_bar: &'a StatusBarLayout,
+    physical_size: PhysicalSize<u32>,
+    status_h: f32,
+    left: Option<&'a Buffer>,
+    center: Option<&'a Buffer>,
+    right: Option<&'a Buffer>,
+    single: Option<&'a Buffer>,
+) {
+    if status_bar.taffy.is_some() {
+        if let (Some(l), Some(c), Some(r)) = (left, center, right) {
+            push_status_cluster_text_areas(areas, status_bar, physical_size, status_h, l, c, r);
+        }
+    } else if let Some(buf) = single {
+        let w = physical_size.width as i32;
+        let h = physical_size.height as i32;
+        let clip_top = (physical_size.height as f32 - status_h).max(0.0).round() as i32;
+        let top = physical_size.height as f32 - status_h + 4.0;
+        areas.push(TextArea {
+            buffer: buf,
+            left: 8.0,
+            top,
+            scale: 1.0,
+            bounds: TextBounds { left: 0, top: clip_top, right: w, bottom: h },
+            default_color: Color::rgb(
+                palette::STATUS_BAR_FG[0],
+                palette::STATUS_BAR_FG[1],
+                palette::STATUS_BAR_FG[2],
+            ),
+            custom_glyphs: &[],
+        });
+    }
+}
+
 /// Append integrated-terminal [`TextArea`]s; `bufs` must match `snapshot` run count.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn push_terminal_text_areas<'a>(
     areas: &mut Vec<TextArea<'a>>,
     bufs: &'a [Buffer],
@@ -159,7 +237,7 @@ fn push_terminal_text_areas<'a>(
     // When terminal_left_px > 0 the terminal renders inside a right panel (v3 layout).
     // Otherwise fall back to the classic full-width bottom strip.
     let (body_left, clip_left, clip_right) = if terminal_left_px > 0.0 {
-        let left = terminal_left_px + 14.0; // 14 px padding inside panel
+        let left = terminal_left_px + 18.0; // ~18 px padding — matches Cursor-style terminal inset
         let right = if terminal_right_px > 0.0 {
             terminal_right_px.round() as i32
         } else {
@@ -205,7 +283,6 @@ fn push_terminal_text_areas<'a>(
 }
 
 /// Shape [`FrameChrome`] text lines into buffers and append matching [`TextArea`]s.
-#[allow(clippy::too_many_arguments)]
 fn push_frame_chrome_text_areas<'a>(
     font_system: &mut FontSystem,
     chrome_overlay_buffers: &'a mut Vec<Buffer>,
@@ -237,12 +314,22 @@ fn push_frame_chrome_text_areas<'a>(
     let w = physical_size.width as i32;
     let h = physical_size.height as i32;
     for (line, buf) in fc.lines.iter().zip(chrome_overlay_buffers.iter()) {
+        let bounds = if let Some(c) = line.clip {
+            TextBounds {
+                left: c[0] as i32,
+                top: c[1] as i32,
+                right: c[2] as i32,
+                bottom: c[3] as i32,
+            }
+        } else {
+            TextBounds { left: 0, top: 0, right: w, bottom: h }
+        };
         areas.push(TextArea {
             buffer: buf,
             left: line.left,
             top: line.top,
             scale: 1.0,
-            bounds: TextBounds { left: 0, top: 0, right: w, bottom: h },
+            bounds,
             default_color: Color::rgb(line.rgb[0], line.rgb[1], line.rgb[2]),
             custom_glyphs: &[],
         });
@@ -260,7 +347,12 @@ pub struct TextLayer {
     text_renderer: TextRenderer,
     line_buffers: Vec<Buffer>,
     custom_glyphs_per_line: Vec<Vec<CustomGlyph>>,
+    /// Full-width fallback when `StatusBarLayout::taffy` is `None`.
     status_line_buffer: Option<Buffer>,
+    /// Three-column status bar (left / center / right) when layout is available.
+    status_left_buffer: Option<Buffer>,
+    status_center_buffer: Option<Buffer>,
+    status_right_buffer: Option<Buffer>,
     dev_hud_buffer: Option<Buffer>,
     gutter_line_buffers: Vec<Buffer>,
     settings_overlay_buffer: Option<Buffer>,
@@ -301,6 +393,9 @@ impl TextLayer {
             line_buffers: Vec::new(),
             custom_glyphs_per_line: Vec::new(),
             status_line_buffer: None,
+            status_left_buffer: None,
+            status_center_buffer: None,
+            status_right_buffer: None,
             dev_hud_buffer: None,
             gutter_line_buffers: Vec::new(),
             settings_overlay_buffer: None,
@@ -319,11 +414,59 @@ impl TextLayer {
         Metrics::new(14.0 * self.scale_factor, 20.0 * self.scale_factor).line_height
     }
 
+    fn fill_status_bar_buffers(
+        &mut self,
+        status_bar: Option<&StatusBarLayout>,
+        physical_size: PhysicalSize<u32>,
+        metrics: Metrics,
+    ) {
+        self.status_line_buffer = None;
+        self.status_left_buffer = None;
+        self.status_center_buffer = None;
+        self.status_right_buffer = None;
+        let attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY));
+        let Some(sb) = status_bar else {
+            return;
+        };
+        if let Some(ref layout) = sb.taffy {
+            let wf = |id: u64| {
+                layout
+                    .items
+                    .iter()
+                    .find(|i| i.widget_id == id)
+                    .map(|i| i.rect.width.max(1.0))
+                    .unwrap_or(physical_size.width as f32)
+            };
+            let mut l = Buffer::new(&mut self.font_system, metrics);
+            l.set_size(&mut self.font_system, Some(wf(1)), None);
+            l.set_text(&mut self.font_system, &sb.left, &attrs, Shaping::Advanced, None);
+            l.shape_until_scroll(&mut self.font_system, false);
+            self.status_left_buffer = Some(l);
+
+            let mut c = Buffer::new(&mut self.font_system, metrics);
+            c.set_size(&mut self.font_system, Some(wf(2)), None);
+            c.set_text(&mut self.font_system, &sb.center, &attrs, Shaping::Advanced, None);
+            c.shape_until_scroll(&mut self.font_system, false);
+            self.status_center_buffer = Some(c);
+
+            let mut r = Buffer::new(&mut self.font_system, metrics);
+            r.set_size(&mut self.font_system, Some(wf(3)), None);
+            r.set_text(&mut self.font_system, &sb.right, &attrs, Shaping::Advanced, None);
+            r.shape_until_scroll(&mut self.font_system, false);
+            self.status_right_buffer = Some(r);
+        } else {
+            let mut sbuf = Buffer::new(&mut self.font_system, metrics);
+            sbuf.set_size(&mut self.font_system, Some(physical_size.width as f32), None);
+            sbuf.set_text(&mut self.font_system, &sb.line, &attrs, Shaping::Advanced, None);
+            sbuf.shape_until_scroll(&mut self.font_system, false);
+            self.status_line_buffer = Some(sbuf);
+        }
+    }
+
     pub fn after_frame(&mut self) {
         self.atlas.trim();
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn fill_visible_lines(
         &mut self,
         snapshot: &TextBufferSnapshot,
@@ -498,6 +641,9 @@ impl TextLayer {
         queue: &Queue,
         lines: &[String],
         physical_size: PhysicalSize<u32>,
+        content_inset_left_px: f32,
+        content_inset_top_px: f32,
+        content_inset_right_px: f32,
     ) -> Result<(), RenderError> {
         self.settings_overlay_buffer = None;
         self.terminal_buffers.clear();
@@ -506,13 +652,22 @@ impl TextLayer {
         self.custom_glyphs_per_line.clear();
         self.gutter_line_buffers.clear();
         self.status_line_buffer = None;
+        self.status_left_buffer = None;
+        self.status_center_buffer = None;
+        self.status_right_buffer = None;
         self.dev_hud_buffer = None;
 
         let text = lines.join("\n");
         let metrics = Metrics::new(14.0 * self.scale_factor, 20.0 * self.scale_factor);
         let attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY));
         let mut buf = Buffer::new(&mut self.font_system, metrics);
-        buf.set_size(&mut self.font_system, Some(physical_size.width as f32), None);
+        let pad_x = 12.0;
+        let pad_y = 12.0;
+        let text_left = pad_x + content_inset_left_px;
+        let text_top = pad_y + content_inset_top_px;
+        let text_w =
+            (physical_size.width as f32 - text_left - content_inset_right_px - pad_x).max(80.0);
+        buf.set_size(&mut self.font_system, Some(text_w), None);
         buf.set_text(&mut self.font_system, &text, &attrs, Shaping::Advanced, None);
         buf.shape_until_scroll(&mut self.font_system, false);
         self.settings_overlay_buffer = Some(buf);
@@ -522,14 +677,16 @@ impl TextLayer {
             Resolution { width: physical_size.width.max(1), height: physical_size.height.max(1) },
         );
 
-        let w = physical_size.width as i32;
         let h = physical_size.height as i32;
+        let clip_l = content_inset_left_px.round().max(0.0) as i32;
+        let clip_t = content_inset_top_px.round().max(0.0) as i32;
+        let clip_r = (physical_size.width as f32 - content_inset_right_px).max(0.0).round() as i32;
         let areas = vec![TextArea {
             buffer: self.settings_overlay_buffer.as_ref().expect("just set"),
-            left: 12.0,
-            top: 12.0,
+            left: text_left,
+            top: text_top,
             scale: 1.0,
-            bounds: TextBounds { left: 0, top: 0, right: w, bottom: h },
+            bounds: TextBounds { left: clip_l, top: clip_t, right: clip_r, bottom: h },
             default_color: Color::rgb(0xE0, 0xE0, 0xE0),
             custom_glyphs: &[],
         }];
@@ -549,7 +706,6 @@ impl TextLayer {
     }
 
     /// Shapes the document, optional settings overlay, and optional integrated terminal (M26).
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         device: &Device,
@@ -574,7 +730,15 @@ impl TextLayer {
         language: Language,
     ) -> Result<(), RenderError> {
         if let Some(lines) = settings_overlay {
-            return self.prepare_settings_overlay(device, queue, lines, physical_size);
+            return self.prepare_settings_overlay(
+                device,
+                queue,
+                lines,
+                physical_size,
+                content_inset_left_px,
+                content_inset_top_px,
+                content_inset_right_px,
+            );
         }
         self.settings_overlay_buffer = None;
 
@@ -619,15 +783,7 @@ impl TextLayer {
         let (gutter_w, _) = compute_gutter_width_px(total_lines, self.scale_factor);
         self.fill_gutter_buffers(first, last, total_lines, gutter_w, metrics);
 
-        self.status_line_buffer = None;
-        let attrs = Attrs::new().family(Family::Name(BUNDLED_MONO_FAMILY));
-        if let Some(sb) = status_bar {
-            let mut sbuf = Buffer::new(&mut self.font_system, metrics);
-            sbuf.set_size(&mut self.font_system, Some(physical_size.width as f32), None);
-            sbuf.set_text(&mut self.font_system, &sb.line, &attrs, Shaping::Advanced, None);
-            sbuf.shape_until_scroll(&mut self.font_system, false);
-            self.status_line_buffer = Some(sbuf);
-        }
+        self.fill_status_bar_buffers(status_bar, physical_size, metrics);
 
         self.set_dev_hud_buffer(dev_hud_line);
 
@@ -652,20 +808,17 @@ impl TextLayer {
             content_inset_right_px,
         );
 
-        if let (Some(sb), Some(buf)) = (status_bar, self.status_line_buffer.as_ref()) {
-            let w = physical_size.width as i32;
-            let h = physical_size.height as i32;
-            let clip_top = (physical_size.height as f32 - sb.height_px).max(0.0).round() as i32;
-            let top = physical_size.height as f32 - sb.height_px + 4.0;
-            areas.push(TextArea {
-                buffer: buf,
-                left: 8.0,
-                top,
-                scale: 1.0,
-                bounds: TextBounds { left: 0, top: clip_top, right: w, bottom: h },
-                default_color: Color::rgb(0xB0, 0xB0, 0xB0),
-                custom_glyphs: &[],
-            });
+        if let Some(sb) = status_bar {
+            append_status_bar_text_areas(
+                &mut areas,
+                sb,
+                physical_size,
+                status_h,
+                self.status_left_buffer.as_ref(),
+                self.status_center_buffer.as_ref(),
+                self.status_right_buffer.as_ref(),
+                self.status_line_buffer.as_ref(),
+            );
         }
 
         push_dev_hud_text_area(
@@ -730,14 +883,7 @@ impl TextLayer {
                     cursor_col,
                     language,
                 );
-                self.status_line_buffer = None;
-                if let Some(sb) = status_bar {
-                    let mut sbuf = Buffer::new(&mut self.font_system, metrics);
-                    sbuf.set_size(&mut self.font_system, Some(physical_size.width as f32), None);
-                    sbuf.set_text(&mut self.font_system, &sb.line, &attrs, Shaping::Advanced, None);
-                    sbuf.shape_until_scroll(&mut self.font_system, false);
-                    self.status_line_buffer = Some(sbuf);
-                }
+                self.fill_status_bar_buffers(status_bar, physical_size, metrics);
                 self.set_dev_hud_buffer(dev_hud_line);
                 self.fill_gutter_buffers(first, last, total_lines, gutter_w, metrics);
                 if let Some(snap) = terminal_snapshot {
@@ -759,21 +905,17 @@ impl TextLayer {
                     content_inset_top_px,
                     content_inset_right_px,
                 );
-                if let (Some(sb), Some(buf)) = (status_bar, self.status_line_buffer.as_ref()) {
-                    let w = physical_size.width as i32;
-                    let h = physical_size.height as i32;
-                    let clip_top =
-                        (physical_size.height as f32 - sb.height_px).max(0.0).round() as i32;
-                    let top = physical_size.height as f32 - sb.height_px + 4.0;
-                    areas2.push(TextArea {
-                        buffer: buf,
-                        left: 8.0,
-                        top,
-                        scale: 1.0,
-                        bounds: TextBounds { left: 0, top: clip_top, right: w, bottom: h },
-                        default_color: Color::rgb(0xB0, 0xB0, 0xB0),
-                        custom_glyphs: &[],
-                    });
+                if let Some(sb) = status_bar {
+                    append_status_bar_text_areas(
+                        &mut areas2,
+                        sb,
+                        physical_size,
+                        status_h,
+                        self.status_left_buffer.as_ref(),
+                        self.status_center_buffer.as_ref(),
+                        self.status_right_buffer.as_ref(),
+                        self.status_line_buffer.as_ref(),
+                    );
                 }
                 push_dev_hud_text_area(
                     self.dev_hud_buffer.as_ref(),

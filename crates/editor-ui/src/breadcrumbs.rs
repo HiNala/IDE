@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::chrome::{ChromeQuad, FrameChrome};
 use crate::icons::{paint_icon, Icon};
+use crate::text_fit;
 use crate::theme::palette;
 
 /// Logical height of the breadcrumbs strip.
@@ -39,6 +40,35 @@ pub fn crumb_segments(rel: &Path) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+fn segment_text_width(seg: &str, scale: f32) -> f32 {
+    seg.chars().count() as f32 * 7.2 * scale
+}
+
+/// Width of one chevron icon including gap padding (matches paint loop).
+fn chevron_block_width(scale: f32) -> f32 {
+    let chev_size = 10.0 * scale;
+    SEGMENT_GAP * scale + chev_size + SEGMENT_GAP * scale
+}
+
+/// Full width of the visible crumb row starting at `start` (0 = all segments).
+/// When `start > 0`, a leading "…" + chevron is included.
+fn crumb_row_width(segments: &[String], start: usize, scale: f32) -> f32 {
+    if start >= segments.len() {
+        return 0.0;
+    }
+    let mut w = 0.0;
+    if start > 0 {
+        w += segment_text_width("…", scale) + chevron_block_width(scale);
+    }
+    for (j, seg) in segments[start..].iter().enumerate() {
+        if j > 0 {
+            w += chevron_block_width(scale);
+        }
+        w += segment_text_width(seg, scale);
+    }
+    w
 }
 
 /// Paint the breadcrumbs strip. `rel` is the buffer's workspace-relative path
@@ -79,33 +109,93 @@ pub fn paint_breadcrumbs(
     let chev_size = 10.0 * scale;
     let text_y = origin_y + 6.0 * scale;
     let separator_y = origin_y + h / 2.0;
+    let right_limit = origin_x + strip_width_px - HPAD * scale;
+    let budget = (right_limit - (origin_x + HPAD * scale)).max(0.0);
+    let strip_clip = [origin_x, origin_y, origin_x + strip_width_px, origin_y + h];
+
+    // Show as many path segments as fit; if needed, drop leading parts (with "…") like macOS.
+    let mut start = 0usize;
+    while start < segments.len() && crumb_row_width(&segments, start, scale) > budget {
+        start += 1;
+    }
+    if start >= segments.len() && !segments.is_empty() {
+        start = segments.len() - 1;
+    }
+    let mut display: Vec<String> = segments[start..].to_vec();
+    if !display.is_empty() {
+        // Reserve width for the leading "…" block when it will be shown.
+        let prefix = if start > 0 {
+            segment_text_width("…", scale) + chevron_block_width(scale)
+        } else {
+            0.0
+        };
+        if display.len() == 1 {
+            let b = (budget - prefix).max(0.0);
+            display[0] = text_fit::ellipsize_mono(&display[0], b, scale, 7.2);
+        } else {
+            let n = display.len();
+            // `s0 chev s1 chev ... s_{n-1}` — width before the last label includes n-1 chevrons.
+            let w_head: f32 =
+                display[0..n - 1].iter().map(|s| segment_text_width(s, scale)).sum::<f32>()
+                    + (n - 1) as f32 * chevron_block_width(scale);
+            let last_budget = (budget - prefix - w_head).max(0.0);
+            if let Some(last) = display.last_mut() {
+                if segment_text_width(last, scale) > last_budget {
+                    *last = text_fit::ellipsize_mono(last, last_budget, scale, 7.2);
+                }
+            }
+        }
+    }
+
     let mut x = origin_x + HPAD * scale;
-    let mut hits = Vec::with_capacity(segments.len());
-    let mut accumulated = PathBuf::new();
+    let mut hits = Vec::new();
     let text_rgb = palette::EDITOR_FG_DIM;
     let last_rgb = palette::EDITOR_FG;
+    let last_global = segments.len().saturating_sub(1);
 
-    for (i, seg) in segments.iter().enumerate() {
-        accumulated.push(seg);
-        let is_last = i + 1 == segments.len();
-        // Measure with the same 7.2px-per-char approximation used elsewhere.
-        let w_text = seg.chars().count() as f32 * 7.2 * scale;
-        let seg_w = w_text;
+    if start > 0 {
+        let ell = "…";
+        let ell_w = segment_text_width(ell, scale);
+        chrome.push_line_clipped(x, text_y, ell.to_string(), text_rgb, strip_clip);
+        x += ell_w;
+        x += SEGMENT_GAP * scale;
+        let chev_x = x + chev_size / 2.0;
+        paint_icon(
+            chrome,
+            Icon::ChevronRight,
+            chev_x,
+            separator_y,
+            chev_size,
+            [
+                text_rgb[0] as f32 / 255.0,
+                text_rgb[1] as f32 / 255.0,
+                text_rgb[2] as f32 / 255.0,
+                1.0,
+            ],
+        );
+        x += chev_size + SEGMENT_GAP * scale;
+    }
 
-        // Stop drawing once we would overflow the strip; honor a small right-side gutter.
-        if x + seg_w > origin_x + strip_width_px - HPAD * scale {
+    for (j, seg) in display.iter().enumerate() {
+        let global_i = start + j;
+        let is_last = global_i == last_global;
+        let mut acc = PathBuf::new();
+        for s in segments.iter().take(global_i + 1) {
+            acc.push(s);
+        }
+        let w_text = segment_text_width(seg, scale);
+        if x + w_text > right_limit {
             break;
         }
-
-        chrome.push_line(x, text_y, seg.clone(), if is_last { last_rgb } else { text_rgb });
+        let seg_rgb = if is_last { last_rgb } else { text_rgb };
         let x0 = x;
-        x += seg_w;
-        hits.push(BreadcrumbHit { full_path: accumulated.clone(), x0, x1: x });
-
+        chrome.push_line_clipped(x, text_y, seg.clone(), seg_rgb, strip_clip);
+        x += w_text;
+        hits.push(BreadcrumbHit { full_path: acc, x0, x1: x });
         if !is_last {
             x += SEGMENT_GAP * scale;
             let chev_x = x + chev_size / 2.0;
-            if chev_x + chev_size / 2.0 > origin_x + strip_width_px - HPAD * scale {
+            if chev_x + chev_size / 2.0 > right_limit {
                 break;
             }
             paint_icon(

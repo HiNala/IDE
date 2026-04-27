@@ -22,69 +22,77 @@ pub const fn rgba_u8(r: u8, g: u8, b: u8, a: u8) -> [f32; 4] {
 
 /// Background, foreground, and accent palette for chrome surfaces.
 ///
-/// Design: obsidian dark + soft violet (`#9580ff`).
-/// Surfaces: s0=#07070b (deepest) → s1=#0c0c12 → s2=#090910 → s3=#101018 → s4=#14141e
+/// Design: deep ink base + raised chrome + electric violet accents (Cursor / 2025 dark).
+/// Surfaces: shell #08080d → canvas ~#08080c → panels #0c0c14 → inputs #12121c.
 pub mod palette {
     // === Editor surface ===
-    /// Main editor background — obsidian (#090910).
-    pub const EDITOR_BG: [f32; 4] = rgba_u8(0x09, 0x09, 0x10, 0xff);
-    /// Editor body text — near-white (#eeeef8).
-    pub const EDITOR_FG: [u8; 3] = [0xee, 0xee, 0xf8];
-    /// Dim text: line numbers, inactive hints (#70708a).
-    pub const EDITOR_FG_DIM: [u8; 3] = [0x70, 0x70, 0x8a];
+    /// Main editor canvas — near-black (reads “true dark” on OLED-style UIs).
+    pub const EDITOR_BG: [f32; 4] = rgba_u8(0x08, 0x08, 0x0c, 0xff);
+    /// Editor body text — near-white (#f4f4fa).
+    pub const EDITOR_FG: [u8; 3] = [0xf4, 0xf4, 0xfa];
+    /// Dim text: line numbers, inactive hints (cool gray).
+    pub const EDITOR_FG_DIM: [u8; 3] = [0x78, 0x7b, 0x92];
 
     // === Activity bar (retained for layout but width=0 in this design) ===
-    pub const ACTIVITY_BG: [f32; 4] = rgba_u8(0x07, 0x07, 0x0b, 0xff);
-    pub const ACTIVITY_FG_ACTIVE: [u8; 3] = [0xc4, 0xb4, 0xff];
-    pub const ACTIVITY_FG_INACTIVE: [u8; 3] = [0x3a, 0x3a, 0x52];
+    pub const ACTIVITY_BG: [f32; 4] = rgba_u8(0x08, 0x08, 0x0d, 0xff);
+    pub const ACTIVITY_FG_ACTIVE: [u8; 3] = [0xdd, 0xd2, 0xff];
+    pub const ACTIVITY_FG_INACTIVE: [u8; 3] = [0x4a, 0x4c, 0x5e];
 
     // === Sidebar ===
-    /// Sidebar panel background (#0c0c12).
-    pub const SIDEBAR_BG: [f32; 4] = rgba_u8(0x0c, 0x0c, 0x12, 0xff);
+    /// Sidebar — half-step above canvas.
+    pub const SIDEBAR_BG: [f32; 4] = rgba_u8(0x0c, 0x0c, 0x14, 0xff);
     /// Hovered row tint.
-    pub const SIDEBAR_ROW_HOVER: [f32; 4] = rgba_u8(0x14, 0x14, 0x20, 0xff);
-    /// Focused / selected row (violet tint).
-    pub const SIDEBAR_ROW_FOCUS: [f32; 4] = rgba_u8(0x95, 0x80, 0xff, 0x26);
+    pub const SIDEBAR_ROW_HOVER: [f32; 4] = rgba_u8(0x16, 0x16, 0x22, 0xff);
+    /// Focused / selected row (violet wash).
+    pub const SIDEBAR_ROW_FOCUS: [f32; 4] = rgba_u8(0xa8, 0x55, 0xf7, 0x2a);
     /// Sidebar active accent left bar.
-    pub const SIDEBAR_ACCENT: [f32; 4] = rgba_u8(0x95, 0x80, 0xff, 0xff);
-    /// Sidebar header label (#3a3a52).
-    pub const SIDEBAR_HEADER_FG: [u8; 3] = [0x3a, 0x3a, 0x52];
-    /// Sidebar row text (#70708a).
-    pub const SIDEBAR_ROW_FG: [u8; 3] = [0x70, 0x70, 0x8a];
-    /// Sidebar border (#ffffff0f).
-    pub const SIDEBAR_BORDER: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x0f);
+    pub const SIDEBAR_ACCENT: [f32; 4] = rgba_u8(0xbf, 0x6b, 0xff, 0xff);
+    /// Sidebar header label.
+    pub const SIDEBAR_HEADER_FG: [u8; 3] = [0x6a, 0x6c, 0x82];
+    /// Sidebar row text.
+    pub const SIDEBAR_ROW_FG: [u8; 3] = [0x9a, 0x9c, 0xb2];
+    /// Hairline border (~8% white) — clean separation.
+    pub const SIDEBAR_BORDER: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x14);
+    /// Sidebar git: modified file — amber.
+    pub const SIDEBAR_GIT_MODIFIED: [u8; 3] = [0xf5, 0xa6, 0x23];
+    /// Sidebar git: untracked file — soft green.
+    pub const SIDEBAR_GIT_UNTRACKED: [u8; 3] = [0x7e, 0xc6, 0x99];
+    /// Sidebar git: newly added/staged file — bright green.
+    pub const SIDEBAR_GIT_ADDED: [u8; 3] = [0x5d, 0xdd, 0x8e];
 
     // === Tab strip ===
-    /// Tab strip background (#0c0c12).
-    pub const TAB_STRIP_BG: [f32; 4] = rgba_u8(0x0c, 0x0c, 0x12, 0xff);
+    pub const TAB_STRIP_BG: [f32; 4] = rgba_u8(0x0c, 0x0c, 0x14, 0xff);
     /// Inactive tab fill.
-    pub const TAB_INACTIVE_BG: [f32; 4] = rgba_u8(0x0c, 0x0c, 0x12, 0xff);
-    /// Active tab fill (matches editor bg #090910).
-    pub const TAB_ACTIVE_BG: [f32; 4] = rgba_u8(0x09, 0x09, 0x10, 0xff);
-    /// Tab separator line.
-    pub const TAB_SEPARATOR: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x0f);
+    pub const TAB_INACTIVE_BG: [f32; 4] = rgba_u8(0x0c, 0x0c, 0x14, 0xff);
+    /// Active tab — same as editor canvas.
+    pub const TAB_ACTIVE_BG: [f32; 4] = EDITOR_BG;
+    /// Global hairline: `rgba(255,255,255,0.06)` (reference shell).
+    pub const HAIRLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.06];
+    /// Tab separator / bottom hairline.
+    pub const TAB_SEPARATOR: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x14);
     /// Active tab text (#eeeef8).
     pub const TAB_ACTIVE_FG: [u8; 3] = [0xee, 0xee, 0xf8];
-    /// Inactive tab text (#70708a).
-    pub const TAB_INACTIVE_FG: [u8; 3] = [0x70, 0x70, 0x8a];
+    /// Inactive tab label — softer than body text.
+    pub const TAB_INACTIVE_FG: [u8; 3] = [0x6e, 0x72, 0x8a];
     /// Tab close-button icon color when dim.
-    pub const TAB_CLOSE_DIM: [u8; 3] = [0x3a, 0x3a, 0x52];
+    pub const TAB_CLOSE_DIM: [u8; 3] = [0x5a, 0x5c, 0x6e];
 
     // === Status bar ===
-    /// Status bar background — deepest obsidian (#07070b).
-    pub const STATUS_BAR_BG_ACTIVE: [f32; 4] = rgba_u8(0x07, 0x07, 0x0b, 0xff);
-    /// Status bar background when idle — same as active.
-    pub const STATUS_BAR_BG_IDLE: [f32; 4] = rgba_u8(0x07, 0x07, 0x0b, 0xff);
-    /// Status bar text (#70708a).
-    pub const STATUS_BAR_FG: [u8; 3] = [0x70, 0x70, 0x8a];
+    /// [`STATUS_BAR_BG`] / active strip (Cursor reference #080810).
+    pub const STATUS_BAR_BG: [f32; 4] = rgba_u8(0x08, 0x08, 0x10, 0xff);
+    /// Deepest shell strip — below panels.
+    pub const STATUS_BAR_BG_ACTIVE: [f32; 4] = STATUS_BAR_BG;
+    pub const STATUS_BAR_BG_IDLE: [f32; 4] = STATUS_BAR_BG;
+    /// Muted label text (readability on #08080d).
+    pub const STATUS_BAR_FG: [u8; 3] = [0x8a, 0x8c, 0xa3];
 
     // === Accent (shared) ===
-    /// Primary accent: soft violet (#9580ff).
-    pub const ACCENT_BLUE: [f32; 4] = rgba_u8(0x95, 0x80, 0xff, 0xff);
-    /// Accent tint for active elements.
-    pub const ACCENT_TINT: [f32; 4] = rgba_u8(0x95, 0x80, 0xff, 0x26);
-    /// Accent text (#c4b4ff).
-    pub const ACCENT_TEXT: [u8; 3] = [0xc4, 0xb4, 0xff];
+    /// Primary accent — violet-500 class (#A855F7), matches reference IDEs.
+    pub const ACCENT_BLUE: [f32; 4] = rgba_u8(0xa8, 0x55, 0xf7, 0xff);
+    /// Focus rings / list wash.
+    pub const ACCENT_TINT: [f32; 4] = rgba_u8(0xa8, 0x55, 0xf7, 0x33);
+    /// On-accent and bright labels.
+    pub const ACCENT_TEXT: [u8; 3] = [0xec, 0xdd, 0xff];
     /// Diff added / success green (#5ddd8e).
     pub const DIFF_ADDED: [f32; 4] = rgba_u8(0x5d, 0xdd, 0x8e, 0xff);
     /// Diff modified / warning amber (#f0b454).
@@ -93,24 +101,22 @@ pub mod palette {
     pub const DIFF_REMOVED: [f32; 4] = rgba_u8(0xe8, 0x5c, 0x6e, 0xff);
 
     // === Chrome overlay (palettes / modals) ===
-    /// Overlay panel background (#101018 near-opaque).
-    pub const OVERLAY_BG: [f32; 4] = rgba_u8(0x10, 0x10, 0x18, 0xf8);
-    /// Overlay border.
-    pub const OVERLAY_BORDER: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x1c);
+    pub const OVERLAY_BG: [f32; 4] = rgba_u8(0x12, 0x12, 0x1c, 0xfa);
+    pub const OVERLAY_BORDER: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x18);
     /// Overlay row text (#70708a).
     pub const OVERLAY_FG: [u8; 3] = [0x70, 0x70, 0x8a];
 
-    // === Syntax — bright & crisp (Antigravity IDE palette) ===
-    /// Keyword (fn, if, let, struct) — soft violet (#d09fff).
-    pub const SYNTAX_KEYWORD: [u8; 3] = [0xd0, 0x9f, 0xff];
+    // === Syntax — high-contrast on ink ===
+    /// Keyword (fn, if, let, struct).
+    pub const SYNTAX_KEYWORD: [u8; 3] = [0xda, 0xae, 0xff];
     /// Control-flow keyword (return, break, match) — same as keyword.
     pub const SYNTAX_CONTROL: [u8; 3] = [0xd0, 0x9f, 0xff];
     /// String literal — bright green (#72e898).
     pub const SYNTAX_STRING: [u8; 3] = [0x72, 0xe8, 0x98];
     /// Numeric literal — amber (#ffbe6a).
     pub const SYNTAX_NUMBER: [u8; 3] = [0xff, 0xbe, 0x6a];
-    /// Comment — muted purple (#4a4a6a).
-    pub const SYNTAX_COMMENT: [u8; 3] = [0x4a, 0x4a, 0x6a];
+    /// Comment — cool slate (reads on #08080c).
+    pub const SYNTAX_COMMENT: [u8; 3] = [0x5c, 0x5e, 0x78];
     /// Type name (struct, enum, trait) — sky blue (#90c4ff).
     pub const SYNTAX_TYPE: [u8; 3] = [0x90, 0xc4, 0xff];
     /// Function call / definition — warm yellow (#ffd57e).
@@ -120,27 +126,30 @@ pub mod palette {
     /// Operator / punctuation — muted (#80809c).
     pub const SYNTAX_OPERATOR: [u8; 3] = [0x80, 0x80, 0x9c];
 
-    // === Agent panel surface ===
-    /// Agent panel background (#0c0c12 — same as sidebar).
-    pub const AGENT_BG: [f32; 4] = rgba_u8(0x0c, 0x0c, 0x12, 0xff);
-    /// Agent panel input area (#101018).
-    pub const AGENT_INPUT_BG: [f32; 4] = rgba_u8(0x10, 0x10, 0x18, 0xff);
-    /// Agent panel border (#ffffff0f).
-    pub const AGENT_BORDER: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x0f);
-    /// Agent panel header / dim text (#3a3a52).
-    pub const AGENT_HEADER_FG: [u8; 3] = [0x3a, 0x3a, 0x52];
-    /// Agent send button background (violet accent).
-    pub const AGENT_SEND_BG: [f32; 4] = rgba_u8(0x95, 0x80, 0xff, 0xff);
+    // === Agent panel surface (Cursor reference: #0a0a14 / #13131c) ===
+    pub const AGENT_PANEL_BG: [f32; 4] = rgba_u8(0x0a, 0x0a, 0x14, 0xff);
+    pub const AGENT_COMPOSER_BG: [f32; 4] = rgba_u8(0x13, 0x13, 0x1c, 0xff);
+    /// Transcript scroll area (reference #0b0b14).
+    pub const AGENT_TRANSCRIPT_BG: [f32; 4] = rgba_u8(0x0b, 0x0b, 0x14, 0xff);
+    /// Embedded terminal body (reference #0a0a10).
+    pub const AGENT_TERMINAL_BG: [f32; 4] = rgba_u8(0x0a, 0x0a, 0x10, 0xff);
+    /// Main rail fill.
+    pub const AGENT_BG: [f32; 4] = AGENT_PANEL_BG;
+    /// Compose / model fields — raised surface.
+    pub const AGENT_INPUT_BG: [f32; 4] = AGENT_COMPOSER_BG;
+    pub const AGENT_BORDER: [f32; 4] = rgba_u8(0xff, 0xff, 0xff, 0x12);
+    pub const AGENT_HEADER_FG: [u8; 3] = [0x6a, 0x6c, 0x84];
+    /// Send — same family as `ACCENT_BLUE`, slightly bright for a primary CTA.
+    pub const AGENT_SEND_BG: [f32; 4] = rgba_u8(0xb4, 0x6a, 0xff, 0xff);
     /// Queued session dot (#3a3a52).
     pub const AGENT_QUEUED_DOT: [f32; 4] = rgba_u8(0x3a, 0x3a, 0x52, 0xff);
 
     // === Diff background ===
-    /// Tool-message / diff subtle tint (#0e0e18).
-    pub const DIFF_BG: [f32; 4] = rgba_u8(0x0e, 0x0e, 0x18, 0xff);
+    pub const DIFF_BG: [f32; 4] = rgba_u8(0x0a, 0x0a, 0x10, 0xff);
 
     // === Accent body text ===
-    /// Bright violet readable on dark bg — assistant label (#c4b4ff).
-    pub const ACCENT_BLUE_TEXT: [u8; 3] = [0xc4, 0xb4, 0xff];
+    /// Readable on dark bg — links to [`ACCENT_TEXT`].
+    pub const ACCENT_BLUE_TEXT: [u8; 3] = ACCENT_TEXT;
 
     /// Re-export so callers can build one-off colours without a separate import.
     pub use super::rgba_u8;
@@ -148,6 +157,10 @@ pub mod palette {
 
 /// Logical pixel spacing used by multiple chrome modules.
 pub mod spacing {
+    /// Context file chip height (logical px; row may add padding).
+    pub const CONTEXT_CHIP_HEIGHT: f32 = 22.0;
+    /// Gap between context chips (logical px).
+    pub const CONTEXT_CHIP_GAP: f32 = 8.0;
     /// Horizontal pad between icon and text in rows.
     pub const ROW_GAP: f32 = 6.0;
     /// Vertical pad at the top of overlay modals.
@@ -182,9 +195,9 @@ mod tests {
     #[test]
     fn palette_alpha_values_are_sane() {
         assert_eq!(palette::EDITOR_BG[3], 1.0);
-        // Violet tint 0x26 alpha for focused sidebar rows.
-        assert!((palette::SIDEBAR_ROW_FOCUS[3] - 0x26 as f32 / 255.0).abs() < 1e-6);
-        // Overlay background near-opaque 0xf8.
-        assert!((palette::OVERLAY_BG[3] - 0xf8 as f32 / 255.0).abs() < 1e-6);
+        // Focus wash uses ~0x2a alpha for focused sidebar rows.
+        assert!((palette::SIDEBAR_ROW_FOCUS[3] - 0x2a as f32 / 255.0).abs() < 1e-6);
+        // Overlay background near-opaque 0xfa.
+        assert!((palette::OVERLAY_BG[3] - 0xfa as f32 / 255.0).abs() < 1e-6);
     }
 }

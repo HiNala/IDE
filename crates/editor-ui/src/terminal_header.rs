@@ -1,12 +1,9 @@
 //! Thin header strip sitting at the top of the integrated terminal pane.
 //!
-//! Deliberately minimal: a "Terminal" label on the left, a close button on
-//! the right, a 1px separator underneath. No tabs, no kebab menu — the pane
-//! becomes recognizable chrome without crowding the viewport.
-//!
-//! The painter is a pure function: it pushes quads + text into [`FrameChrome`]
-//! and returns a hit region for the close glyph so mouse routing in the app
-//! can consume clicks on it.
+//! Cursor-style: **Terminal / Problems / Output** tabs (only Terminal is
+//! interactive today; others are visual stubs), close on the right,
+//! 1px separators. Quads + text go into [`FrameChrome`]; [`paint_terminal_header`]
+//! returns close + header hit regions for mouse routing.
 
 use crate::chrome::{ChromeQuad, FrameChrome};
 use crate::icons::{paint_icon, Icon};
@@ -21,8 +18,10 @@ const RIGHT_PAD: f32 = 8.0;
 /// Logical padding inside the close button rect (so the hit target is bigger
 /// than the icon itself, following Fitts's law).
 const CLOSE_BUTTON_PAD: f32 = 6.0;
-/// Logical left pad for the "Terminal" label.
+/// Logical left pad for the tab strip.
 const LEFT_PAD: f32 = 12.0;
+/// Gap between tab labels (logical px).
+const TAB_GAP: f32 = 18.0;
 
 /// Hit region for the close button in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,6 +49,47 @@ impl TerminalHeaderHits {
     #[must_use]
     pub fn pointer_on_header(&self, x: f32, y: f32) -> bool {
         x >= self.header_x0 && x <= self.header_x1 && y >= self.header_y0 && y <= self.header_y1
+    }
+}
+
+/// Cursor-style tab row: **Terminal** (active) · Problems · Output.
+///
+/// `height` is physical px (e.g. `TERMINAL_HEADER_HEIGHT * scale`). Drawn at `left` / `top`.
+///
+/// `reserve_trailing_px` — keep this many physical pixels free on the right (e.g. for the
+/// close button in the main bottom terminal). Use `0.0` for the agent-panel mini header.
+pub fn paint_terminal_title_tabs(
+    chrome: &mut FrameChrome,
+    scale: f32,
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    reserve_trailing_px: f32,
+) {
+    const NAMES: &[&str] = &["Terminal", "Problems", "Output"];
+    let row_clip = [left, top, left + width, top + height];
+    let y_text = top + (height - 9.0 * scale) / 2.0;
+    let mut x = left + LEFT_PAD * scale;
+    let max_x = left + width - reserve_trailing_px - 6.0 * scale;
+    for (i, name) in NAMES.iter().enumerate() {
+        let active = i == 0;
+        let rgb = if active { palette::TAB_ACTIVE_FG } else { palette::SIDEBAR_ROW_FG };
+        let w_approx = name.len() as f32 * 6.6 * scale;
+        if x + w_approx > max_x {
+            break;
+        }
+        chrome.push_line_clipped(x, y_text, (*name).to_string(), rgb, row_clip);
+        if active {
+            chrome.push_quad(ChromeQuad {
+                left: x,
+                top: top + height - 2.0 * scale,
+                width: w_approx,
+                height: 2.0 * scale,
+                rgba: palette::ACCENT_BLUE,
+            });
+        }
+        x += w_approx + TAB_GAP * scale;
     }
 }
 
@@ -93,14 +133,9 @@ pub fn paint_terminal_header(
         rgba: palette::TAB_SEPARATOR,
     });
 
-    // Label. Vertical center: the font ascent lives about 9 logical px below
-    // the strip top for a 13px font at this line height.
-    chrome.push_line(
-        origin_x + LEFT_PAD * scale,
-        origin_y + 7.0 * scale,
-        "Terminal",
-        palette::SIDEBAR_HEADER_FG,
-    );
+    let reserve_close =
+        (TERMINAL_CLOSE_ICON_SIZE + CLOSE_BUTTON_PAD * 2.0 + RIGHT_PAD + 10.0) * scale;
+    paint_terminal_title_tabs(chrome, scale, origin_x, origin_y, pane_width_px, h, reserve_close);
 
     // Close button: centered inside a padded hit target so there's breathing
     // room on trackpads / touch.
@@ -141,7 +176,7 @@ mod tests {
         let hits = paint_terminal_header(&mut c, 1.0, 0.0, 500.0, 1024.0);
         // bg + top separator + bottom separator + close-icon quads
         assert!(c.quads.len() >= 3, "expected >=3 quads, got {}", c.quads.len());
-        assert_eq!(c.lines.len(), 1);
+        assert_eq!(c.lines.len(), 3);
         assert_eq!(c.lines[0].text, "Terminal");
         // Close rect sits on the right half of the pane.
         assert!(hits.close_x0 > 500.0);

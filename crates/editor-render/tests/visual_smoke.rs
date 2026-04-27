@@ -5,6 +5,9 @@
 //! ```text
 //! cargo test -p editor-render --test visual_smoke -- --ignored --nocapture
 //! ```
+//!
+//! For Cursor-style shell comparison, add a PNG under `docs/assets/cursor_style_reference.png`
+//! (see `editor-ui` test `reference_visual`) and compare in a future pixel-diff harness.
 
 #![allow(clippy::print_stderr)] // Skip message when no GPU in optional smoke test.
 
@@ -66,6 +69,8 @@ fn text_layer_prepare_smoke_large_buffer() {
             None,
             None,
             None,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,

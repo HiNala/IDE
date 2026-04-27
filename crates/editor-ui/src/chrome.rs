@@ -7,6 +7,8 @@ pub struct ChromeTextLine {
     pub top: f32,
     pub text: String,
     pub rgb: [u8; 3],
+    /// When set, [`glyphon::TextBounds`] = `(left, top, right, bottom)` in **window px** (clip box).
+    pub clip: Option<[f32; 4]>,
 }
 
 /// Premultiplied-ish RGBA axis-aligned quad in window pixels.
@@ -42,6 +44,18 @@ impl FrameChrome {
     }
 
     pub fn push_line(&mut self, left: f32, top: f32, text: impl Into<String>, rgb: [u8; 3]) {
-        self.lines.push(ChromeTextLine { left, top, text: text.into(), rgb });
+        self.lines.push(ChromeTextLine { left, top, text: text.into(), rgb, clip: None });
+    }
+
+    /// Same as [`Self::push_line`] but clips shaping to the axis-aligned rect `(l,t,r,b)` in px.
+    pub fn push_line_clipped(
+        &mut self,
+        left: f32,
+        top: f32,
+        text: impl Into<String>,
+        rgb: [u8; 3],
+        clip: [f32; 4],
+    ) {
+        self.lines.push(ChromeTextLine { left, top, text: text.into(), rgb, clip: Some(clip) });
     }
 }

@@ -15,6 +15,7 @@ members = [
     "crates/editor-input",
     "crates/editor-io",
     "crates/editor-index",
+    "crates/editor-layout",
     "crates/editor-metadata",
     "crates/editor-render",
     "crates/editor-search",
@@ -57,6 +58,7 @@ needless_pass_by_value        = "warn"
 module_name_repetitions       = "allow"
 missing_errors_doc            = "allow"
 missing_panics_doc            = "allow"
+too_many_arguments            = "allow"
 
 [workspace.dependencies]
 anyhow              = "1.0"
@@ -105,6 +107,7 @@ url                 = "2.5.8"
 wiremock            = "0.6.5"
 chrono              = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 sha2                = "0.10"
+taffy               = "0.10"
 regex               = "1"
 rusqlite            = { version = "0.32", features = ["bundled"] }
 

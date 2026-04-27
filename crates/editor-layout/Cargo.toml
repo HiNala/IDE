@@ -1,0 +1,21 @@
+[package]
+name         = "editor-layout"
+description  = "Flexbox layout for IDE chrome; wraps taffy with stable IDE-facing types."
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+authors      = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+homepage     = { workspace = true }
+readme       = "README.md"
+publish      = false
+
+[lints]
+workspace = true
+
+[dependencies]
+taffy = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

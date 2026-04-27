@@ -4,15 +4,17 @@ use editor_workspace::{BufferId, BufferManager};
 
 use crate::chrome::{ChromeQuad, FrameChrome};
 use crate::icons::{paint_icon, Icon};
+use crate::text_fit;
 use crate::theme::palette;
 
 /// Logical height of the tab strip.
-pub const TAB_STRIP_HEIGHT: f32 = 34.0;
+pub const TAB_STRIP_HEIGHT: f32 = 32.0;
 const TAB_MIN_W: f32 = 120.0;
 const TAB_MAX_W: f32 = 240.0;
 const TAB_PAD: f32 = 10.0;
 const CLOSE_ICON_SIZE: f32 = 12.0;
-const DIRTY_DOT_SIZE: f32 = 8.0;
+/// Leading status dot (active = accent; inactive = status hints).
+const STATUS_TAB_DOT: f32 = 6.0;
 
 /// Hit regions for a frame (for mouse routing).
 #[derive(Debug, Clone)]
@@ -91,25 +93,29 @@ pub fn paint_tab_strip(
     let mut x = origin_x - scroll_x;
     let active = buffers.active();
     let close_w = 24.0 * scale;
+    let dot_pad = (STATUS_TAB_DOT + 6.0) * scale;
+    let mut inactive_ordinal: usize = 0;
 
+    let fixed = TAB_PAD * 2.0 * scale + dot_pad + close_w;
+    let max_inner = (TAB_MAX_W * scale) - fixed;
     for id in &order {
         let label = tab_label(*id, buffers, &order);
-        let display: String = label.chars().take(48).collect();
-        let dirty = buffers.get(*id).map(|s| s.dirty).unwrap_or(false);
-        // Width budget: padding + (optional dirty dot) + text + close button.
-        let dirty_pad = if dirty { (DIRTY_DOT_SIZE + 6.0) * scale } else { 0.0 };
-        let w = (display.chars().count() as f32 * 7.2 * scale
-            + TAB_PAD * 2.0 * scale
-            + dirty_pad
-            + close_w)
-            .clamp(TAB_MIN_W * scale, TAB_MAX_W * scale);
         let is_active = active == Some(*id);
+        // Fit label to the maximum tab body first, then re-fit if the min width clamps.
+        let mut display = text_fit::ellipsize_mono(&label, max_inner, scale, 7.2);
+        let mut w = (display.chars().count() as f32 * 7.2 * scale + fixed)
+            .clamp(TAB_MIN_W * scale, TAB_MAX_W * scale);
+        let inner2 = w - fixed;
+        display = text_fit::ellipsize_mono(&label, inner2, scale, 7.2);
+        w = (display.chars().count() as f32 * 7.2 * scale + fixed)
+            .clamp(TAB_MIN_W * scale, TAB_MAX_W * scale);
         let tab_bg = if is_active { palette::TAB_ACTIVE_BG } else { palette::TAB_INACTIVE_BG };
         chrome.push_quad(ChromeQuad { left: x, top: origin_y, width: w, height: h, rgba: tab_bg });
         if is_active {
+            // Cursor / VS Code style: accent line along the bottom of the active tab.
             chrome.push_quad(ChromeQuad {
                 left: x,
-                top: origin_y,
+                top: origin_y + h - 2.0 * scale,
                 width: w,
                 height: 2.0 * scale,
                 rgba: palette::ACCENT_BLUE,
@@ -125,27 +131,28 @@ pub fn paint_tab_strip(
             });
         }
         let text_rgb = if is_active { palette::TAB_ACTIVE_FG } else { palette::TAB_INACTIVE_FG };
-        // Dirty indicator: a small filled dot to the left of the label.
         let mut text_x = x + TAB_PAD * scale;
-        if dirty {
-            let cx = text_x + DIRTY_DOT_SIZE * scale / 2.0;
+        // Status dot: active = primary accent; inactive = alternate secondary hints.
+        let rgba = if is_active {
+            palette::ACCENT_BLUE
+        } else {
+            // Warm / cool alternation so inactive tabs don’t mirror the active purple dot.
+            let c = if inactive_ordinal.is_multiple_of(2) {
+                palette::DIFF_MODIFIED
+            } else {
+                palette::DIFF_ADDED
+            };
+            inactive_ordinal += 1;
+            c
+        };
+        {
+            let cx = text_x + STATUS_TAB_DOT * scale / 2.0;
             let cy = origin_y + h / 2.0;
-            paint_icon(
-                chrome,
-                Icon::Dot,
-                cx,
-                cy,
-                DIRTY_DOT_SIZE * scale,
-                [
-                    text_rgb[0] as f32 / 255.0,
-                    text_rgb[1] as f32 / 255.0,
-                    text_rgb[2] as f32 / 255.0,
-                    1.0,
-                ],
-            );
-            text_x += (DIRTY_DOT_SIZE + 6.0) * scale;
+            paint_icon(chrome, Icon::Dot, cx, cy, STATUS_TAB_DOT * scale, rgba);
         }
-        chrome.push_line(text_x, origin_y + 10.0 * scale, display, text_rgb);
+        text_x += dot_pad;
+        let tab_clip = [x, origin_y, x + w, origin_y + h];
+        chrome.push_line_clipped(text_x, origin_y + 10.0 * scale, display, text_rgb, tab_clip);
         let cx0 = x + w - close_w;
         // Close glyph: centered X drawn from rects (no Unicode).
         let rgb = palette::TAB_CLOSE_DIM;

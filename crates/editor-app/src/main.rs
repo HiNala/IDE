@@ -31,9 +31,10 @@ use editor_io::{load_file_sync, save_file_sync, Encoding, LoadError, LoadedFile,
 use editor_settings::{LegacySessionMerge, LineEndingPreference, SettingsStore};
 use editor_terminal::{detect_shell, Terminal, TerminalConfig, TerminalId};
 use editor_ui::{
-    paint_activity_bar, paint_tab_strip, ActivityIcon, AgentPanel, ChromeQuad, CommandEntry,
-    CommandPalette, FindBar, FrameChrome, QuickOpenPalette, Sidebar, TabHit, ACTIVITY_BAR_WIDTH,
-    TAB_STRIP_HEIGHT,
+    compute_main_chrome_layout, main_chrome_to_layout_result, paint_activity_bar, paint_tab_strip,
+    paint_title_bar, palette, ActivityIcon, AgentPanel, ChromeQuad, CommandEntry, CommandPalette,
+    ContextChip, FindBar, FrameChrome, LayoutResult, MainChromeParams, QuickOpenPalette, Sidebar,
+    TabHit, ACTIVITY_BAR_WIDTH, TAB_STRIP_HEIGHT, TITLE_BAR_HEIGHT,
 };
 use editor_workspace::entry::FileEntry;
 use editor_workspace::{BufferId, BufferManager, FileSystemEvent, Workspace};
@@ -56,7 +57,9 @@ use winit::window::{Fullscreen, Window, WindowId};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Deep obsidian background (`#090910`).
-const CLEAR: wgpu::Color = wgpu::Color { r: 0.035, g: 0.035, b: 0.063, a: 1.0 };
+// Match `editor_ui::palette::EDITOR_BG` (#08080c).
+const CLEAR: wgpu::Color =
+    wgpu::Color { r: 0x08 as f64 / 255.0, g: 0x08 as f64 / 255.0, b: 0x0c as f64 / 255.0, a: 1.0 };
 
 #[derive(Debug)]
 enum AppEvent {
@@ -453,10 +456,13 @@ fn run_windowed(
         quick_open: QuickOpenPalette::new(),
         command_palette: CommandPalette::new(),
         tab_hits: Vec::new(),
+        shell_layout: None,
         breadcrumb_hits: Vec::new(),
         find_bar: FindBar::default(),
         git_branch: None,
         git_last_refresh: Instant::now() - Duration::from_secs(10),
+        git_status_map: std::collections::HashMap::new(),
+        diff_panel: editor_ui::DiffPanel::default(),
         gutter_marks: Vec::new(),
         gutter_marks_version: None,
         gutter_marks_for_path: None,
@@ -478,16 +484,13 @@ fn run_windowed(
         chat_input: String::new(),
         chat_input_cursor: 0,
         agent_panel_focused: false,
-        agent_view_active: false,
         chat_last_delta_at: None,
         settings_active_field: SettingsField::ApiKey,
         settings_api_key_buf: String::new(),
         settings_model_buf: String::new(),
         skill_registry: {
-            let reg = editor_skills::SkillRegistry::load(
-                workspace_hint.as_deref(),
-                &Default::default(),
-            );
+            let reg =
+                editor_skills::SkillRegistry::load(workspace_hint.as_deref(), &Default::default());
             std::sync::Arc::new(std::sync::RwLock::new(reg))
         },
         metadata_store: workspace_hint
@@ -499,7 +502,7 @@ fn run_windowed(
     // Seed the initial session's conversation so the panel renders immediately.
     if let Some(s) = app.agent_panel.sessions.first() {
         let id = s.id;
-        app.chat_conversations.entry(id).or_insert_with(editor_chat::Conversation::new);
+        app.chat_conversations.entry(id).or_default();
     }
     if let Some(ws_root) = workspace_hint {
         app.open_workspace_folder(&ws_root);
@@ -594,15 +597,21 @@ struct App {
     command_palette: CommandPalette,
     /// Tab hit boxes from the last frame's `paint_tab_strip` — used by mouse routing.
     tab_hits: Vec<TabHit>,
+    /// Last shell [`LayoutResult`] from [`main_chrome_to_layout_result`] (widget bounds for hit testing).
+    shell_layout: Option<LayoutResult>,
     /// Breadcrumb hit regions (one per visible segment) captured from the
     /// last `paint_breadcrumbs` call. Drives click-to-navigate (M14).
     breadcrumb_hits: Vec<editor_ui::BreadcrumbHit>,
     // --- M16 in-buffer find / replace -----------------------------------------------
     /// Active find / replace overlay (M16). Hidden by default.
     find_bar: FindBar,
-    // --- M18 light-touch git branch in the status bar --------------------------------
+    // --- M18 git awareness -----------------------------------------------------------
     git_branch: Option<String>,
     git_last_refresh: Instant,
+    /// Cached git file status per workspace-relative path (M18 sidebar colors).
+    git_status_map: std::collections::HashMap<PathBuf, editor_git::FileStatus>,
+    /// Diff-vs-HEAD overlay panel (M18: Ctrl+Shift+D).
+    diff_panel: editor_ui::DiffPanel,
     // --- M17/M18 diff gutter cache ---------------------------------------------------
     /// Per-line gutter marks for the active buffer (`None` slots = unchanged).
     /// Recomputed when the buffer text version advances past `gutter_marks_version`.
@@ -632,8 +641,6 @@ struct App {
     chat_input_cursor: usize,
     /// Whether keyboard focus is in the agent panel textarea.
     agent_panel_focused: bool,
-    /// When true the center area shows the active agent session's conversation.
-    agent_view_active: bool,
     /// Last time a TextDelta arrived; used to detect stalled streams.
     chat_last_delta_at: Option<std::time::Instant>,
     /// Which field in the settings overlay has cursor focus.
@@ -1090,6 +1097,7 @@ impl App {
                 self.workspace = Some(ws);
                 self.rebuild_workspace_entries();
                 self.refresh_git_branch(true);
+                self.refresh_git_statuses();
                 // Auto-show the sidebar so folder opens are immediately useful.
                 if !self.sidebar.visible {
                     self.sidebar.visible = true;
@@ -1097,15 +1105,11 @@ impl App {
                 self.reveal_active_in_sidebar();
 
                 // M21: create a metadata store for this workspace.
-                self.metadata_store =
-                    Some(editor_metadata::MetadataStore::new(ws_root.clone()));
+                self.metadata_store = Some(editor_metadata::MetadataStore::new(ws_root.clone()));
 
                 // M27: reload skills for the new workspace root.
                 if let Ok(mut sr) = self.skill_registry.write() {
-                    *sr = editor_skills::SkillRegistry::load(
-                        Some(&ws_root),
-                        &Default::default(),
-                    );
+                    *sr = editor_skills::SkillRegistry::load(Some(&ws_root), &Default::default());
                 }
 
                 // Rebuild tool schemas to include any workspace-specific tools.
@@ -1190,6 +1194,94 @@ impl App {
         }
     }
 
+    /// Refresh git file status for all workspace entries and push colors into the sidebar (M18).
+    fn refresh_git_statuses(&mut self) {
+        let start = match self.workspace.as_ref() {
+            Some(w) => w.root().to_path_buf(),
+            None => return,
+        };
+        let repo = match GitRepo::discover(&start) {
+            Ok(Some(r)) => r,
+            _ => {
+                if !self.git_status_map.is_empty() {
+                    self.git_status_map.clear();
+                    self.sidebar.set_git_statuses(std::collections::HashMap::new());
+                }
+                return;
+            }
+        };
+        let mut map: std::collections::HashMap<PathBuf, editor_git::FileStatus> =
+            std::collections::HashMap::new();
+        for entry in &self.workspace_entries {
+            if entry.kind == editor_workspace::entry::FileKind::Directory {
+                continue;
+            }
+            let rel = &entry.relative;
+            match repo.file_status_vs_head(rel) {
+                Ok(st) => {
+                    map.insert(rel.clone(), st);
+                }
+                Err(e) => {
+                    debug!(rel = %rel.display(), error = %e, "git status failed for file");
+                }
+            }
+        }
+        // Convert to sidebar type.
+        // `Added` means file is in the worktree but not in HEAD (untracked/new file).
+        let sidebar_map: std::collections::HashMap<PathBuf, editor_ui::SidebarGitStatus> = map
+            .iter()
+            .filter_map(|(p, st)| {
+                let sgs = match st {
+                    editor_git::FileStatus::Modified => editor_ui::SidebarGitStatus::Modified,
+                    editor_git::FileStatus::Added => editor_ui::SidebarGitStatus::Untracked,
+                    editor_git::FileStatus::Removed | editor_git::FileStatus::Unmodified => {
+                        return None;
+                    }
+                };
+                Some((p.clone(), sgs))
+            })
+            .collect();
+        self.git_status_map = map;
+        self.sidebar.set_git_statuses(sidebar_map);
+    }
+
+    /// Open / close the diff-vs-HEAD panel for the active buffer (M18: Ctrl+Shift+D).
+    fn toggle_diff_panel(&mut self) {
+        if self.diff_panel.visible {
+            self.diff_panel.visible = false;
+            self.request_redraw();
+            return;
+        }
+        let Some(abs) = self.open_path.clone() else {
+            return;
+        };
+        let repo_root = self
+            .workspace_root()
+            .map(Path::to_path_buf)
+            .or_else(|| abs.parent().map(Path::to_path_buf));
+        let Some(start) = repo_root else { return };
+        let repo = match GitRepo::discover(&start) {
+            Ok(Some(r)) => r,
+            _ => return,
+        };
+        let rel = match abs.strip_prefix(repo.workdir()) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => match abs.strip_prefix(&start) {
+                Ok(r) => r.to_path_buf(),
+                Err(_) => return,
+            },
+        };
+        let working_text = self.buffer.to_text();
+        let head_text = repo.head_blob_text_lossy(&rel).unwrap_or_default().unwrap_or_default();
+        let hunks = repo.line_diff_vs_head(&rel, &working_text).unwrap_or_default();
+        let file_name =
+            abs.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let title = format!("Diff vs HEAD — {file_name}");
+        self.diff_panel =
+            editor_ui::DiffPanel::from_diff(&title, &head_text, &working_text, &hunks);
+        self.request_redraw();
+    }
+
     fn apply_workspace_event(&mut self, ev: FileSystemEvent) {
         match ev {
             FileSystemEvent::Created(_) | FileSystemEvent::Removed(_) => {
@@ -1215,6 +1307,10 @@ impl App {
                 if path_inside_dot_git(&path) {
                     if is_git_ref_like(&path) {
                         self.refresh_git_branch(true);
+                        self.refresh_git_statuses();
+                    } else if path.file_name().is_some_and(|n| n == "index") {
+                        // git index changed (git add/reset) — recompute file statuses.
+                        self.refresh_git_statuses();
                     }
                     return;
                 }
@@ -1357,7 +1453,8 @@ impl App {
         }
         let line_h = renderer.line_height_px();
         let edge = 20.0_f64.min(content_bottom / 3.0).max(4.0);
-        if y_px < edge {
+        let top = self.top_chrome_height_px() as f64;
+        if y_px < top + edge {
             self.scroll.y_px = (self.scroll.y_px - line_h).max(0.0);
         } else if y_px > content_bottom - edge {
             self.scroll.y_px += line_h;
@@ -1612,7 +1709,11 @@ impl App {
                 .window
                 .as_ref()
                 .map(|w| {
-                    w.inner_size().height as f32 / self.scale_factor - header_h - status_h - term_h
+                    w.inner_size().height as f32 / self.scale_factor
+                        - editor_ui::TITLE_BAR_HEIGHT
+                        - header_h
+                        - status_h
+                        - term_h
                 })
                 .unwrap_or(240.0)
                 .max(row_h * 4.0);
@@ -1787,6 +1888,7 @@ impl App {
             ("buffer.next", "Buffer: Next", Some("Ctrl+Tab")),
             ("buffer.prev", "Buffer: Previous", Some("Ctrl+Shift+Tab")),
             ("pref.settings", "Preferences: Open Settings", Some("Ctrl+,")),
+            ("git.diff_vs_head", "Git: Diff Active File vs HEAD", Some("Ctrl+Shift+D")),
             ("app.quit", "Quit", Some("Ctrl+Q")),
         ];
         let entries: Vec<CommandEntry> = ENTRIES
@@ -1835,6 +1937,7 @@ impl App {
             "buffer.next" => EditorCommand::NextBuffer,
             "buffer.prev" => EditorCommand::PrevBuffer,
             "pref.settings" => EditorCommand::OpenSettings,
+            "git.diff_vs_head" => EditorCommand::DiffVsHead,
             "app.quit" => EditorCommand::Quit,
             other => {
                 warn!("command palette: unknown id {other:?}");
@@ -1843,6 +1946,36 @@ impl App {
         };
         let _ = self.apply_editor_command(cmd);
         true
+    }
+
+    /// Handle a key press while the diff panel is visible.
+    /// Returns `true` when consumed.
+    fn handle_diff_panel_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let PhysicalKey::Code(code) = event.physical_key else { return false };
+        match code {
+            KeyCode::Escape => {
+                self.diff_panel.visible = false;
+                true
+            }
+            KeyCode::ArrowUp => {
+                self.diff_panel.scroll_by(-1);
+                true
+            }
+            KeyCode::ArrowDown => {
+                self.diff_panel.scroll_by(1);
+                true
+            }
+            KeyCode::PageUp => {
+                self.diff_panel.scroll_by(-10);
+                true
+            }
+            KeyCode::PageDown => {
+                self.diff_panel.scroll_by(10);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Handle a key press while the command palette is visible. Mirrors the
@@ -1958,6 +2091,11 @@ impl App {
         }
     }
 
+    /// Top menu / search bar (always shown; matches reference IDE chrome).
+    fn title_bar_height_px(&self) -> f32 {
+        TITLE_BAR_HEIGHT * self.scale_factor
+    }
+
     /// Breadcrumbs strip height in physical px — painted when a tab strip is
     /// visible AND the active buffer has a displayable path.
     fn breadcrumbs_height_px(&self) -> f32 {
@@ -1968,10 +2106,10 @@ impl App {
         }
     }
 
-    /// Total height of top chrome (tabstrip + breadcrumbs) — used by mouse
-    /// hit-testing to offset the editor canvas.
+    /// Total height of top chrome (title bar + tabstrip + breadcrumbs) — used
+    /// by mouse hit-testing to offset the editor canvas.
     fn top_chrome_height_px(&self) -> f32 {
-        self.tabstrip_height_px() + self.breadcrumbs_height_px()
+        self.title_bar_height_px() + self.tabstrip_height_px() + self.breadcrumbs_height_px()
     }
 
     /// Workspace-relative path of the active buffer, or its `file_name()` when
@@ -2113,6 +2251,11 @@ impl App {
             return;
         }
 
+        let title_h = self.title_bar_height_px();
+        if (y as f32) < title_h {
+            return;
+        }
+
         // Activity bar clicks (the leftmost slim column). Today: the first icon toggles
         // the sidebar; others are placeholders.
         let activity_w = self.activity_bar_width_px() as f64;
@@ -2132,8 +2275,8 @@ impl App {
             // A click anywhere in the sidebar column gives it keyboard focus.
             self.sidebar.focused = true;
             self.terminal_focus = false;
-            // Subtract the header so the row index calculation is relative to the rows area.
-            let rows_top = editor_ui::sidebar::HEADER_HEIGHT * self.scale_factor;
+            // Top of the file list: under title bar + sidebar header.
+            let rows_top = title_h + editor_ui::sidebar::HEADER_HEIGHT * self.scale_factor;
             if let Some(idx) = self.sidebar.row_index_at_y(y as f32, self.scale_factor, rows_top) {
                 let row = self.sidebar.flat_rows()[idx].clone();
                 self.sidebar.highlighted = Some(row.rel.clone());
@@ -2149,9 +2292,10 @@ impl App {
             return;
         }
 
-        // Tab strip clicks.
-        let tab_h = self.tabstrip_height_px() as f64;
-        if tab_h > 0.0 && y < tab_h {
+        // Tab strip — below the title bar.
+        let y_after_title = y as f32 - title_h;
+        let tab_h = self.tabstrip_height_px();
+        if tab_h > 0.0 && y_after_title >= 0.0 && y_after_title < tab_h {
             let xf = x as f32;
             if let Some(hit) =
                 self.tab_hits.iter().find(|h| xf >= h.x0 && xf <= h.close_x1).cloned()
@@ -2180,9 +2324,8 @@ impl App {
             return;
         }
 
-        // Breadcrumb strip clicks — under the tab strip, above the editor.
-        // Navigate to the clicked ancestor in the sidebar (reveal + focus).
-        let bc_top = self.tabstrip_height_px() as f64;
+        // Breadcrumb strip — under the tab strip, above the editor.
+        let bc_top = (title_h + tab_h) as f64;
         let bc_bottom = bc_top + self.breadcrumbs_height_px() as f64;
         if bc_top < bc_bottom && y >= bc_top && y < bc_bottom && !self.breadcrumb_hits.is_empty() {
             let xf = x as f32;
@@ -2232,14 +2375,8 @@ impl App {
             if let Some(hit) = tab_hit {
                 if hit.is_close {
                     self.agent_panel.remove_session(hit.session_idx);
-                    // If we removed the last session deactivate the center view.
-                    if self.agent_panel.sessions.is_empty() {
-                        self.agent_view_active = false;
-                    }
                 } else {
                     self.agent_panel.active_session = hit.session_idx;
-                    // Clicking a session tab opens conversation in center.
-                    self.agent_view_active = true;
                 }
                 self.agent_panel_focused = false;
                 self.request_redraw();
@@ -2252,11 +2389,8 @@ impl App {
                         format!("Chat {}", self.agent_panel.sessions.len()),
                         editor_ui::AgentSessionStatus::Queued,
                     );
-                    self.chat_conversations
-                        .entry(id)
-                        .or_insert_with(editor_chat::Conversation::new);
+                    self.chat_conversations.entry(id).or_default();
                     self.agent_panel.active_session = self.agent_panel.sessions.len() - 1;
-                    self.agent_view_active = true;
                     self.request_redraw();
                     return;
                 }
@@ -2295,8 +2429,6 @@ impl App {
         self.terminal_focus = false;
         self.sidebar.focused = false;
         self.agent_panel_focused = false;
-        // Click in editor area closes the center agent view and returns to code.
-        self.agent_view_active = false;
         let Some(byte) = self.hit_test_byte(x, y) else {
             return;
         };
@@ -2628,6 +2760,9 @@ impl App {
             } else {
                 Some(self.gutter_marks.iter().filter(|m| m.is_some()).count())
             },
+            error_count: 0,
+            warning_count: 0,
+            app_label: Some("IDE - M21".into()),
         }
     }
 
@@ -2659,15 +2794,6 @@ impl App {
         self.tab_hits = tab_hits;
         let inset_right_px = self.agent_panel_width_px();
 
-        // Pre-build agent view lines so the borrow below is clean.
-        let agent_view_lines_storage: Option<Vec<String>> =
-            if self.agent_view_active && self.settings_overlay_lines.is_none() {
-                let lines = self.format_center_agent_lines();
-                if lines.is_empty() { None } else { Some(lines) }
-            } else {
-                None
-            };
-
         if let (Some(renderer), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) {
             let snap = self.buffer.snapshot();
             let physical = w.inner_size();
@@ -2696,17 +2822,7 @@ impl App {
                     0.0
                 },
                 terminal_snapshot: term_snap_owned,
-                settings_overlay_lines: {
-                    // Priority: settings overlay > agent view > none.
-                    if self.settings_overlay_lines.is_some() {
-                        self.settings_overlay_lines.as_deref()
-                    } else if self.agent_view_active {
-                        // Build lazily; stored below.
-                        agent_view_lines_storage.as_deref()
-                    } else {
-                        None
-                    }
-                },
+                settings_overlay_lines: self.settings_overlay_lines.as_deref(),
                 frame_chrome: chrome_opt.as_ref(),
                 content_inset_left_px: inset_left_px,
                 content_inset_top_px: inset_top_px,
@@ -2765,6 +2881,7 @@ impl App {
         // Diff-vs-HEAD cache is version-gated; cheap no-op when stable.
         self.refresh_gutter_marks_if_stale();
         let Some(window) = self.window.as_ref() else {
+            self.shell_layout = None;
             return (None, 0.0, 0.0, Vec::new());
         };
         let physical = window.inner_size();
@@ -2775,21 +2892,43 @@ impl App {
         let breadcrumbs_on = tabstrip_on && self.active_path_rel().is_some();
         let find_on = self.find_bar.visible;
 
+        let shell_params = MainChromeParams {
+            window_width_px: physical.width as f32,
+            window_height_px: physical.height as f32,
+            scale,
+            title_bar_height_logical: TITLE_BAR_HEIGHT,
+            tab_strip_height_logical: TAB_STRIP_HEIGHT,
+            breadcrumbs_height_logical: editor_ui::BREADCRUMBS_HEIGHT,
+            show_tab_strip: tabstrip_on,
+            show_breadcrumbs: breadcrumbs_on,
+            activity_bar_width_logical: ACTIVITY_BAR_WIDTH,
+            sidebar_width_logical: self.sidebar.width,
+            sidebar_visible: sidebar_on,
+            agent_width_logical: self.agent_panel.width,
+            agent_panel_visible: self.agent_panel.visible,
+            status_bar_height_px: self.status_bar_height_px(),
+            terminal_pane_height_px: self.terminal_pane_height_px(),
+        };
+        let shell = compute_main_chrome_layout(&shell_params);
+        self.shell_layout = Some(main_chrome_to_layout_result(&shell_params));
+        let title_h = shell.title_h;
+        let inset_left_px = shell.inset_left_px;
+        let agent_w = shell.agent_w;
+        let breadcrumbs_top_px = shell.breadcrumbs_y;
+        let inset_top_px = shell.inset_top_px;
+        let main_column_h = shell.main_column_h;
+        let status_h = shell.status_h;
+        let term_h = shell.term_h;
+
         let mut chrome = FrameChrome::new();
-        let activity_w = ACTIVITY_BAR_WIDTH * scale;
-        let sidebar_w = if sidebar_on { self.sidebar.width * scale } else { 0.0 };
-        let inset_left_px = activity_w + sidebar_w;
-        let agent_w = self.agent_panel_width_px();
-        let tab_top_px = if tabstrip_on { TAB_STRIP_HEIGHT * scale } else { 0.0 };
-        let breadcrumbs_top_px = tab_top_px;
-        let breadcrumbs_height_px =
-            if breadcrumbs_on { editor_ui::BREADCRUMBS_HEIGHT * scale } else { 0.0 };
-        let inset_top_px = tab_top_px + breadcrumbs_height_px;
-
-        let status_h = self.status_bar_height_px();
-        let term_h = self.terminal_pane_height_px();
-        let column_h = (physical.height as f32 - status_h - term_h).max(1.0);
-
+        let search_pill: String = self
+            .open_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        paint_title_bar(&mut chrome, scale, physical.width as f32, title_h, search_pill.as_str());
+        let activity_w = shell.activity_w;
         // Activity bar: zero-width in this design, paint call is a no-op.
         let icons = [
             ActivityIcon::new(editor_ui::Icon::Explorer, sidebar_on),
@@ -2798,7 +2937,7 @@ impl App {
             ActivityIcon::new(editor_ui::Icon::Run, false),
             ActivityIcon::new(editor_ui::Icon::Settings, false),
         ];
-        paint_activity_bar(&mut chrome, scale, column_h, &icons);
+        paint_activity_bar(&mut chrome, scale, main_column_h, &icons);
 
         // Sidebar column: starts at x=0 (activity bar is zero-width).
         if sidebar_on {
@@ -2815,21 +2954,21 @@ impl App {
                 auto.as_deref(),
                 scale,
                 activity_w,
-                0.0,
-                column_h,
+                title_h,
+                main_column_h,
             );
         }
 
         // Tab strip: spans from sidebar right edge to agent panel left edge.
         let mut tab_hits = Vec::new();
         if tabstrip_on {
-            let strip_w = (physical.width as f32 - inset_left_px - agent_w).max(0.0);
+            let strip_w = shell.editor_strip_width;
             tab_hits = paint_tab_strip(
                 &mut chrome,
                 &self.buffers,
                 scale,
                 inset_left_px,
-                0.0,
+                title_h,
                 0.0,
                 strip_w,
             );
@@ -2837,7 +2976,7 @@ impl App {
 
         // Breadcrumbs strip directly under the tab strip.
         if breadcrumbs_on {
-            let strip_w = (physical.width as f32 - inset_left_px - agent_w).max(0.0);
+            let strip_w = shell.editor_strip_width;
             let rel = self.active_path_rel();
             self.breadcrumb_hits = editor_ui::paint_breadcrumbs(
                 &mut chrome,
@@ -2851,21 +2990,52 @@ impl App {
             self.breadcrumb_hits.clear();
         }
 
-        // Agent panel: right side, full column height.
+        // Agent panel: right side, below the title bar.
         {
-            let panel_left = physical.width as f32 - agent_w;
-            let panel_h = (physical.height as f32 - status_h).max(1.0);
+            let panel_left = shell.agent_panel_left;
+            let panel_h = shell.agent_panel_height;
             let s = self.settings_store.settings();
-            let active_model = s.ai.active_model.as_deref().or_else(|| {
-                s.ai.active_provider.as_deref()
-                    .and_then(|p| s.ai.providers.get(p))
-                    .map(|pc| pc.default_model.as_str())
-            }).unwrap_or("");
+            let active_model =
+                s.ai.active_model
+                    .as_deref()
+                    .or_else(|| {
+                        s.ai.active_provider
+                            .as_deref()
+                            .and_then(|p| s.ai.providers.get(p))
+                            .map(|pc| pc.default_model.as_str())
+                    })
+                    .unwrap_or("");
+            let transcript = self.format_agent_transcript_chrome();
+            let amber = palette::rgba_u8(0xf5, 0xa6, 0x23, 0xff);
+            let purple = palette::ACCENT_BLUE;
+            let mut context_chips: Vec<ContextChip> = Vec::new();
+            if let Some(path) = self.open_path.as_ref() {
+                if let Some(name) = path.file_name() {
+                    let s = name.to_string_lossy();
+                    if !s.is_empty() {
+                        context_chips.push(ContextChip { label: s.into_owned(), dot_rgba: amber });
+                    }
+                }
+            }
+            for id in self.buffers.order_oldest_first() {
+                if self.active_buffer_id == Some(id) {
+                    continue;
+                }
+                if let Some(st) = self.buffers.get(id) {
+                    if let Some(p) = st.path.as_ref().and_then(|p| p.file_name()) {
+                        let s = p.to_string_lossy().into_owned();
+                        if context_chips.iter().all(|c| c.label != s) {
+                            context_chips.push(ContextChip { label: s, dot_rgba: purple });
+                            break;
+                        }
+                    }
+                }
+            }
             self.agent_panel_hits = self.agent_panel.paint(
                 &mut chrome,
                 scale,
                 panel_left,
-                0.0,
+                title_h,
                 panel_h,
                 self.terminal_pane_visible,
                 &self.chat_input.clone(),
@@ -2873,6 +3043,8 @@ impl App {
                 self.agent_panel_focused,
                 self.blink_on,
                 active_model,
+                &context_chips,
+                &transcript,
             );
         }
 
@@ -2885,7 +3057,7 @@ impl App {
                 line_height_px: line_h,
                 content_right_px: physical.width as f32 - agent_w,
                 content_top_px: inset_top_px,
-                content_bottom_px: (physical.height as f32 - status_h - term_h).max(inset_top_px),
+                content_bottom_px: shell.content_bottom_px.max(inset_top_px),
                 scale,
             };
             let _ = editor_ui::paint_scrollbar(&mut chrome, input);
@@ -2967,13 +3139,23 @@ impl App {
             );
         }
 
-        // Status bar — obsidian (#07070b) spanning full width (agent panel paints over its slice).
+        // Diff-vs-HEAD panel (M18: Ctrl+Shift+D).
+        if self.diff_panel.visible {
+            self.diff_panel.paint(
+                &mut chrome,
+                scale,
+                physical.width as f32,
+                physical.height as f32,
+            );
+        }
+
+        // Status bar — deepest shell (see `palette::STATUS_BAR_BG_ACTIVE`).
         chrome.push_quad(ChromeQuad {
             left: 0.0,
             top: physical.height as f32 - status_h,
             width: physical.width as f32,
             height: status_h,
-            rgba: [0.027, 0.027, 0.043, 1.0], // #07070b
+            rgba: palette::STATUS_BAR_BG_ACTIVE,
         });
 
         (Some(chrome), inset_left_px, inset_top_px, tab_hits)
@@ -3073,7 +3255,9 @@ impl App {
     /// Returns true if the event was consumed (no further routing needed).
     fn handle_settings_key(&mut self, event: &winit::event::KeyEvent) -> bool {
         use winit::keyboard::{KeyCode, PhysicalKey};
-        let PhysicalKey::Code(code) = event.physical_key else { return false; };
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return false;
+        };
         let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
 
         match code {
@@ -3093,8 +3277,12 @@ impl App {
             }
             KeyCode::Backspace if !ctrl => {
                 match self.settings_active_field {
-                    SettingsField::ApiKey => { self.settings_api_key_buf.pop(); }
-                    SettingsField::Model  => { self.settings_model_buf.pop(); }
+                    SettingsField::ApiKey => {
+                        self.settings_api_key_buf.pop();
+                    }
+                    SettingsField::Model => {
+                        self.settings_model_buf.pop();
+                    }
                 }
                 self.settings_overlay_lines = Some(self.build_settings_lines());
                 return true;
@@ -3105,7 +3293,7 @@ impl App {
                         if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
                             match self.settings_active_field {
                                 SettingsField::ApiKey => self.settings_api_key_buf.push_str(t),
-                                SettingsField::Model  => self.settings_model_buf.push_str(t),
+                                SettingsField::Model => self.settings_model_buf.push_str(t),
                             }
                             self.settings_overlay_lines = Some(self.build_settings_lines());
                             return true;
@@ -3122,10 +3310,16 @@ impl App {
         match self.settings_active_field {
             SettingsField::ApiKey => {
                 let key = self.settings_api_key_buf.trim().to_string();
-                if key.is_empty() { return; }
+                if key.is_empty() {
+                    return;
+                }
                 // Use the active provider name, falling back to "anthropic".
-                let provider_name = self.settings_store.settings()
-                    .ai.active_provider.clone()
+                let provider_name = self
+                    .settings_store
+                    .settings()
+                    .ai
+                    .active_provider
+                    .clone()
                     .unwrap_or_else(|| "anthropic".into());
                 let store = editor_ai_provider::SecretStore::new();
                 if let Err(e) = store.set_key(&provider_name, &key) {
@@ -3146,7 +3340,9 @@ impl App {
             }
             SettingsField::Model => {
                 let model = self.settings_model_buf.trim().to_string();
-                if model.is_empty() { return; }
+                if model.is_empty() {
+                    return;
+                }
                 self.settings_store.settings_mut().ai.active_model = Some(model.clone());
                 self.chat_engine.set_model(model.clone());
                 tracing::info!(model, "Active model updated from settings");
@@ -3162,21 +3358,32 @@ impl App {
         let provider_name = s.ai.active_provider.as_deref().unwrap_or("anthropic");
 
         // API key field.
-        let key_cursor = if self.settings_active_field == SettingsField::ApiKey { "\u{25b8} " } else { "  " };
+        let key_cursor =
+            if self.settings_active_field == SettingsField::ApiKey { "\u{25b8} " } else { "  " };
         let key_display = if self.settings_api_key_buf.is_empty() {
-            if has_provider { "(key configured)".into() } else { "(no key — type here)".into() }
+            if has_provider {
+                "(key configured)".into()
+            } else {
+                "(no key — type here)".into()
+            }
         } else {
-            let masked: String = self.settings_api_key_buf.chars().enumerate()
+            let masked: String = self
+                .settings_api_key_buf
+                .chars()
+                .enumerate()
                 .map(|(i, c)| if i < 7 { c } else { '\u{2022}' })
                 .collect();
             masked
         };
 
         // Model field.
-        let model_cursor = if self.settings_active_field == SettingsField::Model { "\u{25b8} " } else { "  " };
-        let current_model = s.ai.active_model.as_deref()
-            .or_else(|| s.ai.providers.get(provider_name).map(|p| p.default_model.as_str()))
-            .unwrap_or("(none)");
+        let model_cursor =
+            if self.settings_active_field == SettingsField::Model { "\u{25b8} " } else { "  " };
+        let current_model =
+            s.ai.active_model
+                .as_deref()
+                .or_else(|| s.ai.providers.get(provider_name).map(|p| p.default_model.as_str()))
+                .unwrap_or("(none)");
         let model_display = if self.settings_model_buf.is_empty() {
             format!("{current_model}  (Tab to edit)")
         } else {
@@ -3497,6 +3704,11 @@ impl App {
                 false
             }
             EditorCommand::Cancel => {
+                if self.diff_panel.visible {
+                    self.diff_panel.visible = false;
+                    self.request_redraw();
+                    return false;
+                }
                 if self.find_bar.visible {
                     self.find_bar.visible = false;
                     self.find_bar.matches.clear();
@@ -3525,6 +3737,10 @@ impl App {
                     self.settings_model_buf.clear();
                     self.request_redraw();
                 }
+                false
+            }
+            EditorCommand::DiffVsHead => {
+                self.toggle_diff_panel();
                 false
             }
             EditorCommand::ToggleAgentPanel => {
@@ -3898,6 +4114,15 @@ impl ApplicationHandler<AppEvent> for App {
                 if dy == 0.0 {
                     return;
                 }
+                // Diff panel captures scroll when visible.
+                if self.diff_panel.visible {
+                    let rows = (dy / (14.0 * self.scale_factor)).round() as isize;
+                    if rows != 0 {
+                        self.diff_panel.scroll_by(-rows);
+                        self.request_redraw();
+                    }
+                    return;
+                }
                 // Scroll over the agent panel — no history in panel so just skip.
                 let panel_left = self
                     .window
@@ -3993,6 +4218,10 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 if is_synthetic {
+                    return;
+                }
+                if self.diff_panel.visible && self.handle_diff_panel_key(&event) {
+                    self.request_redraw();
                     return;
                 }
                 if self.find_bar.visible && self.handle_find_bar_key(&event) {

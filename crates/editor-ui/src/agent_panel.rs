@@ -1,25 +1,27 @@
 //! Right-side agent panel: session tabs, AI chat input, and terminal section.
 //!
-//! Design (v3 — matching Antigravity IDE v3 design spec):
+//! Design (v5 — Cursor-style right rail):
 //!   ┌── session tab row (37 px) ────────────────────────────────┐
-//!   ├── chat textarea (fills remaining space) ──────────────────┤
-//!   │  (user types here; conversation shows in center editor)   │
-//!   ├── bottom row: model selector + [⌘↵] [Send] (36 px) ──────┤
+//!   │  optional context file chips (e.g. active buffer name)     │
+//!   │  Transcript (tail scroll) + compose + model row + term      │
+//!   ├── multiline input (fixed min height) ─────────────────────┤
+//!   ├── bottom row: model selector + [⌘↵] [Send] (36 px) ────────┤
 //!   ├── drag handle (5 px) ──────────────────────────────────────┤
 //!   │  Terminal (terminal_fraction of panel height)             │
 //!   └────────────────────────────────────────────────────────────┘
 //!
-//! Conversations are shown in the center area as an "Agent" tab when a session
-//! tab is clicked; the right panel stays focused on input + terminal.
+//! Conversation text is drawn in the transcript region above the input box.
 
 use crate::chrome::{ChromeQuad, FrameChrome};
+use crate::icons::{paint_icon, Icon};
+use crate::text_fit;
 use crate::theme::palette as pal;
 
 // ── Layout constants (logical px) ──────────────────────────────────────────
 
-pub const AGENT_PANEL_WIDTH: f32 = 480.0;
-pub const AGENT_PANEL_MIN_WIDTH: f32 = 300.0;
-pub const AGENT_PANEL_MAX_WIDTH: f32 = 720.0;
+pub const AGENT_PANEL_WIDTH: f32 = 360.0;
+pub const AGENT_PANEL_MIN_WIDTH: f32 = 320.0;
+pub const AGENT_PANEL_MAX_WIDTH: f32 = 640.0;
 
 const SESSION_TAB_ROW_H: f32 = 37.0;
 const BOTTOM_ROW_H: f32 = 36.0;
@@ -29,8 +31,21 @@ const TERM_HEADER_H: f32 = 30.0;
 const CHAR_W: f32 = 7.2;
 /// Logical px per line of chat text.
 const LINE_H: f32 = 14.0;
+/// Minimum height of the compose box (multiline input) in logical px.
+const TYPED_INPUT_MIN_LOGICAL: f32 = 72.0;
+/// Row height for CONTEXT label + file chips (logical px).
+const CONTEXT_CHIP_ROW_H: f32 = 36.0;
+/// Horizontal+vertical inset for transcript & compose (logical px, × scale at paint).
+const PANEL_INNER_PAD: f32 = 18.0;
 
-// ── Chat display types (used by center agent view builder in main.rs) ───────
+/// One @-file style row item: basename + dot color (reference: orange / purple / …).
+#[derive(Debug, Clone)]
+pub struct ContextChip {
+    pub label: String,
+    pub dot_rgba: [f32; 4],
+}
+
+// ── Chat display types (for future rich bubbles / context chips) ─────────────
 
 /// Minimal role tag for display purposes. Decoupled from `editor-chat` so
 /// `editor-ui` stays free of AI/tokio dependencies.
@@ -144,7 +159,11 @@ impl AgentPanel {
     /// Physical pixel width (or 0 when hidden).
     #[must_use]
     pub fn width_px(&self, scale: f32) -> f32 {
-        if self.visible { self.width * scale } else { 0.0 }
+        if self.visible {
+            self.width * scale
+        } else {
+            0.0
+        }
     }
 
     /// Update width from a drag (physical pixels, dragging the left edge leftward = wider).
@@ -175,7 +194,9 @@ impl AgentPanel {
     /// Left X (physical px) of the resize drag edge.
     #[must_use]
     pub fn resize_edge_x_px(&self, scale: f32, window_width_px: f32) -> Option<f32> {
-        if !self.visible { return None; }
+        if !self.visible {
+            return None;
+        }
         Some(window_width_px - self.width_px(scale))
     }
 
@@ -188,12 +209,15 @@ impl AgentPanel {
         panel_height_px: f32,
         terminal_visible: bool,
     ) -> Option<f32> {
-        if !self.visible || !terminal_visible { return None; }
+        if !self.visible || !terminal_visible {
+            return None;
+        }
         let header_h = SESSION_TAB_ROW_H * scale;
         let bottom_row_h = BOTTOM_ROW_H * scale;
         let term_h = panel_height_px * self.terminal_fraction;
         let drag_h = DRAG_H * scale;
-        let input_h = (panel_height_px - header_h - bottom_row_h - drag_h - term_h).max(40.0 * scale);
+        let input_h =
+            (panel_height_px - header_h - bottom_row_h - drag_h - term_h).max(40.0 * scale);
         Some(panel_top_px + header_h + input_h + bottom_row_h)
     }
 
@@ -201,8 +225,10 @@ impl AgentPanel {
 
     /// Paint the full panel chrome into `frame`.
     ///
+    /// `context_chips` are optional file labels (e.g. the active buffer basename) shown as pills
+    /// under the session tabs, similar to Cursor’s @-file chips.
+    ///
     /// Returns [`AgentPanelHits`] with all click regions for use by the main event loop.
-    #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,
         chrome: &mut FrameChrome,
@@ -217,11 +243,15 @@ impl AgentPanel {
         blink_on: bool,
         // Display label for the active AI model (e.g. "claude-sonnet-4-6").
         active_model: &str,
+        // Files in context (e.g. active + another open file); max ~4 short chips.
+        context_chips: &[ContextChip],
+        transcript: &[(String, [u8; 3])],
     ) -> AgentPanelHits {
         if !self.visible || height_px <= 0.5 {
             return AgentPanelHits::default();
         }
         let w = self.width * scale;
+        let panel_clip = [left_px, top_px, left_px + w, top_px + height_px];
 
         // Panel background.
         chrome.push_quad(ChromeQuad {
@@ -243,7 +273,7 @@ impl AgentPanel {
         // ── Session tab row ───────────────────────────────────────────────
         let tab_row_h = SESSION_TAB_ROW_H * scale;
         let (tab_hits, new_btn_rect) =
-            self.paint_session_tabs(chrome, scale, left_px, top_px, w, tab_row_h);
+            self.paint_session_tabs(chrome, scale, left_px, top_px, w, tab_row_h, panel_clip);
         chrome.push_quad(ChromeQuad {
             left: left_px,
             top: top_px + tab_row_h - scale,
@@ -252,57 +282,114 @@ impl AgentPanel {
             rgba: pal::AGENT_BORDER,
         });
 
-        // ── Geometry ──────────────────────────────────────────────────────
+        let chip_row_h = if context_chips.is_empty() { 0.0 } else { CONTEXT_CHIP_ROW_H * scale };
+        if chip_row_h > 0.0 {
+            let chip_y = top_px + tab_row_h;
+            self.paint_context_chip_row(
+                chrome,
+                scale,
+                left_px,
+                chip_y,
+                w,
+                chip_row_h,
+                context_chips,
+                panel_clip,
+            );
+            chrome.push_quad(ChromeQuad {
+                left: left_px,
+                top: chip_y + chip_row_h - scale,
+                width: w,
+                height: scale,
+                rgba: pal::AGENT_BORDER,
+            });
+        }
+
+        // ── Geometry: transcript + compose + bottom + drag + terminal ─────
         let term_h = if terminal_visible { height_px * self.terminal_fraction } else { 0.0 };
         let drag_h = if terminal_visible { DRAG_H * scale } else { 0.0 };
         let bottom_row_h = BOTTOM_ROW_H * scale;
-        let input_area_h =
-            (height_px - tab_row_h - bottom_row_h - drag_h - term_h).max(40.0 * scale);
+        let chat_column_h =
+            (height_px - tab_row_h - chip_row_h - bottom_row_h - drag_h - term_h).max(40.0 * scale);
+        let typed_h = (TYPED_INPUT_MIN_LOGICAL * scale).min(chat_column_h * 0.42).max(48.0 * scale);
+        let transcript_h = (chat_column_h - typed_h).max(0.0);
 
-        let input_top = top_px + tab_row_h;
-        let bottom_top = input_top + input_area_h;
+        let transcript_top = top_px + tab_row_h + chip_row_h;
+        let input_top = transcript_top + transcript_h;
+        let bottom_top = input_top + typed_h;
 
-        // ── Chat textarea (fills all available space) ─────────────────────
-        // Input area background.
+        // Transcript (same fill as the main editor for readable contrast).
+        chrome.push_quad(ChromeQuad {
+            left: left_px + scale,
+            top: transcript_top,
+            width: w - scale,
+            height: transcript_h,
+            rgba: pal::AGENT_TRANSCRIPT_BG,
+        });
+        chrome.push_quad(ChromeQuad {
+            left: left_px,
+            top: transcript_top + transcript_h - scale,
+            width: w,
+            height: scale,
+            rgba: pal::AGENT_BORDER,
+        });
+
+        let pad = PANEL_INNER_PAD * scale;
+        let max_chars = ((self.width - 2.0 * PANEL_INNER_PAD - 8.0) / CHAR_W).max(8.0) as usize;
+        let line_h = LINE_H * scale;
+        let inner_top = transcript_top + 8.0 * scale;
+        let inner_h = (transcript_h - 16.0 * scale).max(line_h);
+        let max_lines = (inner_h / line_h).floor().max(1.0) as usize;
+        let flat = Self::flatten_transcript_rich(transcript, max_chars);
+        let start = flat.len().saturating_sub(max_lines);
+        for (i, (text, rgb)) in flat[start..].iter().enumerate() {
+            let y = inner_top + i as f32 * line_h;
+            if y + line_h > transcript_top + transcript_h {
+                break;
+            }
+            if !text.is_empty() {
+                chrome.push_line_clipped(left_px + pad + scale, y, text.clone(), *rgb, panel_clip);
+            }
+        }
+
+        // Compose box.
         chrome.push_quad(ChromeQuad {
             left: left_px + scale,
             top: input_top,
             width: w - scale,
-            height: input_area_h,
+            height: typed_h,
             rgba: pal::AGENT_INPUT_BG,
         });
 
-        // Focus ring on left edge.
         if input_focused {
             chrome.push_quad(ChromeQuad {
                 left: left_px,
                 top: input_top,
                 width: 2.0 * scale,
-                height: input_area_h,
+                height: typed_h,
                 rgba: pal::ACCENT_BLUE,
             });
         }
 
-        let pad = 14.0 * scale;
         if chat_input.is_empty() {
-            // Placeholder text.
-            chrome.push_line(
+            chrome.push_line_clipped(
                 left_px + pad + scale,
-                input_top + 14.0 * scale,
+                input_top + 10.0 * scale,
                 "Ask anything, or describe what to build\u{2026}".to_string(),
                 pal::AGENT_HEADER_FG,
+                panel_clip,
             );
         } else {
-            let max_chars_f = (self.width - 32.0) / CHAR_W;
+            let max_chars_f = (self.width - 2.0 * PANEL_INNER_PAD - 4.0) / CHAR_W;
             self.paint_input_text(
                 chrome,
                 scale,
                 left_px + pad + scale,
-                input_top + 12.0 * scale,
+                input_top + 8.0 * scale,
                 max_chars_f,
                 chat_input,
                 chat_input_cursor,
                 input_focused && blink_on,
+                panel_clip,
             );
         }
 
@@ -322,9 +409,9 @@ impl AgentPanel {
             rgba: pal::AGENT_BORDER,
         });
 
-        // Send button (right-aligned).
-        let btn_h = 26.0 * scale;
-        let btn_w = 64.0 * scale;
+        // Send (Cursor-style: violet pill + ➤ + label).
+        let btn_h = 28.0 * scale;
+        let btn_w = 88.0 * scale;
         let btn_x = left_px + w - pad - btn_w;
         let btn_y = bottom_top + (bottom_row_h - btn_h) / 2.0;
         chrome.push_quad(ChromeQuad {
@@ -334,28 +421,36 @@ impl AgentPanel {
             height: btn_h,
             rgba: pal::AGENT_SEND_BG,
         });
-        chrome.push_line(
-            btn_x + 18.0 * scale,
+        // Airplane (U+2708) + Send — reference-style “paper plane” affordance.
+        chrome.push_line_clipped(
+            btn_x + 10.0 * scale,
             btn_y + (btn_h - 10.0 * scale) / 2.0,
-            "Send".to_string(),
+            "\u{2708}  Send".to_string(),
             [0xff, 0xff, 0xff],
+            panel_clip,
         );
 
         // ⌘↵ hint.
-        chrome.push_line(
+        chrome.push_line_clipped(
             btn_x - 42.0 * scale,
             btn_y + (btn_h - 9.0 * scale) / 2.0,
             "\u{2318}\u{21b5}".to_string(),
             pal::AGENT_HEADER_FG,
+            panel_clip,
         );
 
-        // Model selector (left side of bottom row).
-        let model_label = if active_model.is_empty() { "no model set" } else { active_model };
-        chrome.push_line(
+        // Model selector + star (reference: favorited / default model).
+        let model_line = if active_model.is_empty() {
+            "no model set".to_string()
+        } else {
+            format!("{active_model} \u{2605}")
+        };
+        chrome.push_line_clipped(
             left_px + pad + scale,
             bottom_top + (bottom_row_h - 9.0 * scale) / 2.0,
-            model_label.to_string(),
-            pal::AGENT_HEADER_FG,
+            model_line,
+            if active_model.is_empty() { pal::AGENT_HEADER_FG } else { pal::ACCENT_TEXT },
+            panel_clip,
         );
 
         // ── Terminal section ──────────────────────────────────────────────
@@ -385,29 +480,152 @@ impl AgentPanel {
                 height: scale,
                 rgba: pal::AGENT_BORDER,
             });
-            chrome.push_line(
-                left_px + 14.0 * scale,
-                th_top + (TERM_HEADER_H * scale - 9.0 * scale) / 2.0,
-                "Terminal".to_string(),
-                pal::AGENT_HEADER_FG,
+            crate::terminal_header::paint_terminal_title_tabs(
+                chrome,
+                scale,
+                left_px,
+                th_top,
+                w,
+                TERM_HEADER_H * scale,
+                0.0,
             );
         }
 
         AgentPanelHits {
             tab_hits,
             send_button: Some([btn_x, btn_y, btn_x + btn_w, btn_y + btn_h]),
-            input_area: Some([
-                left_px + scale,
-                input_top,
-                left_px + w,
-                input_top + input_area_h,
-            ]),
+            input_area: Some([left_px + scale, input_top, left_px + w, input_top + typed_h]),
             new_session_btn: new_btn_rect,
             drag_handle: drag_handle_y,
         }
     }
 
     // ── Internal renderers ───────────────────────────────────────────────────
+
+    /// Cursor-style file pills under session tabs.
+    fn paint_context_chip_row(
+        &self,
+        chrome: &mut FrameChrome,
+        scale: f32,
+        left_px: f32,
+        top_px: f32,
+        panel_w: f32,
+        row_h: f32,
+        chips: &[ContextChip],
+        clip: [f32; 4],
+    ) {
+        chrome.push_quad(ChromeQuad {
+            left: left_px + scale,
+            top: top_px,
+            width: panel_w - scale,
+            height: row_h,
+            rgba: pal::AGENT_BG,
+        });
+        let y_mid = top_px + (row_h - 9.0 * scale) / 2.0;
+        let mut x = left_px + 10.0 * scale;
+        if !chips.is_empty() {
+            // Section label (reference: "CONTEXT" beside file chips).
+            chrome.push_line_clipped(x, y_mid, "CONTEXT".to_string(), pal::SIDEBAR_HEADER_FG, clip);
+            x += 56.0 * scale;
+        }
+        let y_chip = y_mid;
+        let max_x = left_px + panel_w - 10.0 * scale;
+        for ch in chips.iter().take(4) {
+            if ch.label.is_empty() {
+                continue;
+            }
+            let inner_pad = 8.0 * scale;
+            let dot_w = 6.0 * scale;
+            let close_afford = 14.0 * scale;
+            // Fit label in remaining width; cap max chip width for dense rails.
+            let max_chip_w = (max_x - x).min(232.0 * scale);
+            let text_budget =
+                (max_chip_w - dot_w - 4.0 * scale - 2.0 * inner_pad - close_afford - 2.0 * scale)
+                    .max(8.0 * scale);
+            let display = text_fit::ellipsize_mono(&ch.label, text_budget, scale, 6.8);
+            let chip_w = (dot_w
+                + 4.0 * scale
+                + (display.chars().count() as f32) * 6.8 * scale
+                + 2.0 * inner_pad
+                + close_afford)
+                .min(232.0 * scale);
+            if x + chip_w > max_x {
+                break;
+            }
+            let chip_h = row_h - 10.0 * scale;
+            let chip_top = top_px + 5.0 * scale;
+            // Border
+            chrome.push_quad(ChromeQuad {
+                left: x,
+                top: chip_top,
+                width: chip_w,
+                height: chip_h,
+                rgba: pal::AGENT_BORDER,
+            });
+            chrome.push_quad(ChromeQuad {
+                left: x + scale,
+                top: chip_top + scale,
+                width: chip_w - 2.0 * scale,
+                height: chip_h - 2.0 * scale,
+                rgba: pal::AGENT_INPUT_BG,
+            });
+            // Top hairline — soft “lit edge” on dark chips.
+            let hair = scale.max(1.0);
+            chrome.push_quad(ChromeQuad {
+                left: x + 2.0 * scale,
+                top: chip_top + scale,
+                width: chip_w - 4.0 * scale,
+                height: hair,
+                rgba: pal::rgba_u8(0xff, 0xff, 0xff, 0x0b),
+            });
+            // Violet left accent (reference: small purple marker on chips)
+            chrome.push_quad(ChromeQuad {
+                left: x + scale,
+                top: chip_top + scale,
+                width: 2.0 * scale,
+                height: chip_h - 2.0 * scale,
+                rgba: pal::ACCENT_BLUE,
+            });
+            paint_icon(
+                chrome,
+                Icon::Dot,
+                x + 2.0 * scale + inner_pad + dot_w / 2.0,
+                chip_top + chip_h / 2.0,
+                dot_w,
+                ch.dot_rgba,
+            );
+            chrome.push_line_clipped(
+                x + 2.0 * scale + inner_pad + dot_w + 4.0 * scale,
+                y_chip,
+                display,
+                pal::ACCENT_TEXT,
+                clip,
+            );
+            let rgb = pal::AGENT_HEADER_FG;
+            paint_icon(
+                chrome,
+                Icon::Close,
+                x + chip_w - scale - close_afford * 0.45,
+                chip_top + chip_h * 0.5,
+                9.0 * scale,
+                [rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0, 1.0],
+            );
+            x += chip_w + 6.0 * scale;
+        }
+    }
+
+    fn flatten_transcript_rich(
+        rows: &[(String, [u8; 3])],
+        max_chars: usize,
+    ) -> Vec<(String, [u8; 3])> {
+        let mut out = Vec::new();
+        for (s, c) in rows {
+            for part in wrap_text(s, max_chars) {
+                out.push((part, *c));
+            }
+        }
+        out
+    }
 
     /// Render the multi-line chat input with a text cursor.
     fn paint_input_text(
@@ -420,6 +638,7 @@ impl AgentPanel {
         text: &str,
         cursor_byte: usize,
         show_cursor: bool,
+        clip: [f32; 4],
     ) {
         let line_h = LINE_H * scale;
         let max_c = (max_chars_f as usize).max(8);
@@ -429,7 +648,7 @@ impl AgentPanel {
         for (li, line) in lines.iter().enumerate() {
             let y = text_top + li as f32 * line_h;
             let display = if line.len() > max_c { &line[..max_c] } else { line };
-            chrome.push_line(text_left, y, display.to_string(), pal::EDITOR_FG);
+            chrome.push_line_clipped(text_left, y, display.to_string(), pal::EDITOR_FG, clip);
             if show_cursor && !cursor_drawn {
                 let line_end = byte_count + line.len();
                 let line_start = byte_count;
@@ -458,6 +677,7 @@ impl AgentPanel {
         top_px: f32,
         panel_w: f32,
         row_h: f32,
+        clip: [f32; 4],
     ) -> (Vec<AgentTabHit>, Option<[f32; 4]>) {
         let mut hits = Vec::new();
         let mut x = left_px + scale;
@@ -473,9 +693,8 @@ impl AgentPanel {
             let is_active = i == self.active_session;
 
             let label_w = session.label.len() as f32 * 7.0 * scale;
-            let tab_w =
-                (tab_pad_h + dot_r * 2.0 + 6.0 * scale + label_w + close_w + tab_pad_h)
-                    .max(min_tab_w);
+            let tab_w = (tab_pad_h + dot_r * 2.0 + 6.0 * scale + label_w + close_w + tab_pad_h)
+                .max(min_tab_w);
 
             if x + tab_w > new_btn_right - 4.0 * scale {
                 break;
@@ -500,28 +719,31 @@ impl AgentPanel {
                 });
             }
 
-            // Status dot.
+            // Status dot — active session = green (reference), else by state.
             let dot_x = x + tab_pad_h;
             let dot_y = top_px + (row_h - dot_r * 2.0) / 2.0;
+            let dot_rgba =
+                if is_active { pal::DIFF_ADDED } else { status_dot_color(session.status) };
             chrome.push_quad(ChromeQuad {
                 left: dot_x,
                 top: dot_y,
                 width: dot_r * 2.0,
                 height: dot_r * 2.0,
-                rgba: status_dot_color(session.status),
+                rgba: dot_rgba,
             });
 
             let label_x = dot_x + dot_r * 2.0 + 6.0 * scale;
             let label_y = top_px + (row_h - 9.0 * scale) / 2.0;
             let fg = if is_active { pal::EDITOR_FG } else { pal::SIDEBAR_ROW_FG };
-            chrome.push_line(label_x, label_y, session.label.clone(), fg);
+            chrome.push_line_clipped(label_x, label_y, session.label.clone(), fg, clip);
 
             let close_x = x + tab_w - close_w;
-            chrome.push_line(
+            chrome.push_line_clipped(
                 close_x + 4.0 * scale,
                 label_y,
                 "\u{00d7}".to_string(),
                 pal::AGENT_HEADER_FG,
+                clip,
             );
 
             hits.push(AgentTabHit {
@@ -561,11 +783,12 @@ impl AgentPanel {
             height: row_h,
             rgba: pal::AGENT_BG,
         });
-        chrome.push_line(
+        chrome.push_line_clipped(
             new_btn_right + 8.0 * scale,
             top_px + (row_h - 10.0 * scale) / 2.0,
             "+".to_string(),
             pal::AGENT_HEADER_FG,
+            clip,
         );
         let new_btn_rect = Some([new_btn_right, top_px, new_btn_right + new_btn_w, top_px + row_h]);
 
@@ -578,8 +801,8 @@ impl AgentPanel {
 /// RGBA color for a session status dot.
 fn status_dot_color(status: AgentSessionStatus) -> [f32; 4] {
     match status {
-        AgentSessionStatus::Done => pal::DIFF_ADDED,
-        AgentSessionStatus::Running => pal::ACCENT_BLUE,
+        // Mockup: active session = green; idle tab = dim.
+        AgentSessionStatus::Done | AgentSessionStatus::Running => pal::DIFF_ADDED,
         AgentSessionStatus::Queued => pal::rgba_u8(0x3a, 0x3a, 0x52, 0xff),
     }
 }

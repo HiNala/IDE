@@ -1,6 +1,6 @@
-//! Collapsible project file tree (M14).
+//! Collapsible project file tree (M14 + M18 git status colors).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use editor_workspace::entry::{FileEntry, FileKind};
@@ -8,8 +8,16 @@ use editor_workspace::BufferManager;
 
 use crate::chrome::{ChromeQuad, FrameChrome};
 
+/// File status sourced from git, used to color sidebar rows (M18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarGitStatus {
+    Modified,
+    Untracked,
+    Added,
+}
+
 /// Default sidebar width (logical px).
-pub const DEFAULT_SIDEBAR_WIDTH: f32 = 240.0;
+pub const DEFAULT_SIDEBAR_WIDTH: f32 = 220.0;
 /// Row height in logical pixels (before scale).
 pub const ROW_LINE_HEIGHT: f32 = 22.0;
 /// Logical height of the header strip above rows.
@@ -24,10 +32,12 @@ const ROW_HL_RGBA: [f32; 4] = pal::SIDEBAR_ROW_HOVER;
 const ROW_FOCUS_RGBA: [f32; 4] = pal::SIDEBAR_ROW_FOCUS;
 const HEADER_BG_RGBA: [f32; 4] = pal::SIDEBAR_BG;
 const HEADER_RGB: [u8; 3] = pal::SIDEBAR_HEADER_FG;
-const TEXT_RGB: [u8; 3] = pal::SIDEBAR_ROW_FG;
 const TEXT_DIM: [u8; 3] = pal::SIDEBAR_ROW_FG;
 const ACCENT: [u8; 3] = pal::ACCENT_TEXT;
 const BORDER_RGBA: [f32; 4] = pal::SIDEBAR_BORDER;
+const GIT_MODIFIED: [u8; 3] = pal::SIDEBAR_GIT_MODIFIED;
+const GIT_UNTRACKED: [u8; 3] = pal::SIDEBAR_GIT_UNTRACKED;
+const GIT_ADDED: [u8; 3] = pal::SIDEBAR_GIT_ADDED;
 
 /// One visible row in the flattened tree.
 #[derive(Debug, Clone)]
@@ -38,6 +48,8 @@ pub struct FlatRow {
     /// File or directory name (last segment).
     pub label: String,
     pub has_children: bool,
+    /// Git status for this entry (M18); `None` when not in a repo or status unknown.
+    pub git_status: Option<SidebarGitStatus>,
 }
 
 /// Sidebar state: width, scroll, expanded dirs, keyboard highlight.
@@ -51,6 +63,8 @@ pub struct Sidebar {
     pub highlighted: Option<PathBuf>,
     pub focused: bool,
     flat_rows: Vec<FlatRow>,
+    /// Git status per relative path — set by the app on each workspace/index refresh (M18).
+    git_statuses: HashMap<PathBuf, SidebarGitStatus>,
 }
 
 impl Default for Sidebar {
@@ -72,6 +86,15 @@ impl Sidebar {
             highlighted: None,
             focused: false,
             flat_rows: Vec::new(),
+            git_statuses: HashMap::new(),
+        }
+    }
+
+    /// Update the git status map and re-stamp each visible row (M18).
+    pub fn set_git_statuses(&mut self, statuses: HashMap<PathBuf, SidebarGitStatus>) {
+        self.git_statuses = statuses;
+        for row in &mut self.flat_rows {
+            row.git_status = self.git_statuses.get(&row.rel).copied();
         }
     }
 
@@ -133,12 +156,14 @@ impl Sidebar {
                             .and_then(|p| p.components().next())
                             .is_some()
                 });
+            let git_status = self.git_statuses.get(&e.relative).copied();
             self.flat_rows.push(FlatRow {
                 rel: e.relative.clone(),
                 depth,
                 is_dir: e.kind == FileKind::Directory,
                 label,
                 has_children,
+                git_status,
             });
         }
     }
@@ -276,7 +301,6 @@ impl Sidebar {
     ///
     /// `origin_x` is the left edge of the sidebar (usually the activity bar's right edge).
     /// `origin_y` / `viewport_h` cover the full sidebar column including the header.
-    #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &self,
         chrome: &mut FrameChrome,
@@ -293,6 +317,7 @@ impl Sidebar {
         }
         let w = self.width * scale;
         let h = viewport_h.max(1.0);
+        let col_clip = [origin_x, origin_y, origin_x + w, origin_y + h];
         // Column background.
         chrome.push_quad(ChromeQuad {
             left: origin_x,
@@ -310,7 +335,7 @@ impl Sidebar {
             rgba: BORDER_RGBA,
         });
 
-        // Header strip ("EXPLORER"). Slightly lighter than the column, tiny uppercase label.
+        // Header strip: section title (Cursor-style: "FILES").
         let header_h = HEADER_HEIGHT * scale;
         chrome.push_quad(ChromeQuad {
             left: origin_x,
@@ -319,10 +344,8 @@ impl Sidebar {
             height: header_h,
             rgba: HEADER_BG_RGBA,
         });
-        let header_label = workspace_root
-            .and_then(|p| p.file_name())
-            .map(|s| s.to_string_lossy().to_uppercase())
-            .unwrap_or_else(|| "EXPLORER".to_string());
+        // Mockup / Cursor-style: fixed "FILES" label for the explorer tree.
+        let header_label = "FILES".to_string();
         chrome.push_line(
             origin_x + LEFT_PAD * scale,
             origin_y + (header_h - 11.0 * scale) / 2.0,
@@ -378,15 +401,21 @@ impl Sidebar {
                 });
             }
 
+            let git_rgb: [u8; 3] = match row.git_status {
+                Some(SidebarGitStatus::Modified) => GIT_MODIFIED,
+                Some(SidebarGitStatus::Untracked) => GIT_UNTRACKED,
+                Some(SidebarGitStatus::Added) => GIT_ADDED,
+                None => TEXT_DIM,
+            };
             let (icon, rgb) = if row.is_dir {
                 let sym = if self.is_expanded(&row.rel) { "▾ " } else { "▸ " };
-                (format!("{sym}{}", row.label), if is_open { ACCENT } else { TEXT_RGB })
+                (format!("{sym}{}", row.label), if is_open { ACCENT } else { git_rgb })
             } else if is_open {
                 (format!("  {}", row.label), ACCENT)
             } else {
-                (format!("  {}", row.label), TEXT_DIM)
+                (format!("  {}", row.label), git_rgb)
             };
-            chrome.push_line(x0, y + 4.0 * scale, icon, rgb);
+            chrome.push_line_clipped(x0, y + 4.0 * scale, icon, rgb, col_clip);
             y += lh;
         }
     }
@@ -412,6 +441,7 @@ mod tests {
             is_dir,
             label: rel.rsplit('/').next().unwrap_or(rel).to_string(),
             has_children: is_dir,
+            git_status: None,
         }
     }
 
