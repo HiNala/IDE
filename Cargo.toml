@@ -106,7 +106,7 @@ toml                = "0.8.23"
 url                 = "2.5.8"
 wiremock            = "0.6.5"
 chrono              = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-sha2                = "0.10"
+sha2                = "0.11"
 taffy               = "0.10"
 regex               = "1"
 rusqlite            = { version = "0.32", features = ["bundled"] }
