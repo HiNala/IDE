@@ -19,5 +19,5 @@ workspace = true
 
 [dependencies]
 editor-diff = { path = "../editor-diff" }
-gix = { version = "0.66", default-features = false, features = ["revision"] }
+gix = { version = "0.82", default-features = false, features = ["revision"] }
 thiserror = { workspace = true }
