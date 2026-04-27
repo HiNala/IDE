@@ -60,7 +60,7 @@ jobs:
           & $signtoolExe sign /f cert.pfx /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 $msi.FullName
           Remove-Item cert.pfx -Force
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-artifacts
           path: target/wix/*.msi
@@ -102,7 +102,7 @@ jobs:
           echo "dmg_path=$out" >> "$GITHUB_OUTPUT"
           bash scripts/macos-package.sh "$out"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-artifacts
           path: ${{ steps.macos_dmg.outputs.dmg_path }}
@@ -153,7 +153,7 @@ jobs:
           deb=$(ls target/release/bundle/deb/*.deb | head -1)
           mv "$deb" "target/release/ide-${{ github.ref_name }}-linux-x86_64.deb"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-artifacts
           path: |
